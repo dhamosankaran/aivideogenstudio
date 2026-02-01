@@ -212,6 +212,13 @@ class YouTubeTranscriptService:
             # Build full transcript text with timestamps
             transcript_text = self._build_transcript_text(source.transcript)
             
+            # Truncate transcript if too long to prevent oversized prompts
+            # Keep first 15000 chars (roughly 10-15 minutes of content)
+            max_transcript_length = 15000
+            if len(transcript_text) > max_transcript_length:
+                transcript_text = transcript_text[:max_transcript_length] + "\n...[transcript truncated for analysis]"
+                logger.info(f"Truncated transcript from {len(self._build_transcript_text(source.transcript))} to {max_transcript_length} chars")
+            
             # Build LLM prompt
             prompt = self._build_insight_extraction_prompt(
                 transcript_text=transcript_text,
@@ -219,19 +226,47 @@ class YouTubeTranscriptService:
                 duration_seconds=source.duration_seconds or 0
             )
             
-            # Call LLM
+            # Call LLM with retry logic
             from app.schemas.youtube_schemas import InsightsOutput
             
-            response = await self.llm.generate_text(
-                prompt=prompt,
-                temperature=0.7,
-                max_tokens=4000,
-                response_mime_type="application/json",
-                response_schema=InsightsOutput
-            )
+            insights_data = None
+            last_error = None
             
-            # Parse response
-            insights_data = InsightsOutput.model_validate_json(response)
+            # Try up to 2 times - first with full request, then with reduced insights
+            for attempt in range(2):
+                try:
+                    if attempt == 1:
+                        # Second attempt: ask for fewer insights
+                        logger.info("Retrying with reduced insights request (3 insights max)")
+                        prompt = self._build_insight_extraction_prompt(
+                            transcript_text=transcript_text,
+                            video_title=source.title or "Unknown Video",
+                            duration_seconds=source.duration_seconds or 0,
+                            max_insights=3  # Request fewer insights
+                        )
+                    
+                    response = await self.llm.generate_text(
+                        prompt=prompt,
+                        temperature=0.7,
+                        max_tokens=8000,  # Increased from 4000 to handle larger responses
+                        response_mime_type="application/json",
+                        response_schema=InsightsOutput
+                    )
+                    
+                    # Parse response
+                    insights_data = InsightsOutput.model_validate_json(response)
+                    break  # Success, exit retry loop
+                    
+                except Exception as e:
+                    last_error = e
+                    logger.warning(f"Insight analysis attempt {attempt + 1} failed: {str(e)}")
+                    if attempt == 0:
+                        continue  # Try again with reduced request
+                    else:
+                        raise  # Re-raise on final attempt
+            
+            if not insights_data:
+                raise last_error or ValueError("Failed to parse insights")
             
             # Convert to KeyInsight objects with null safety
             insights = []
@@ -269,6 +304,7 @@ class YouTubeTranscriptService:
             source.error_message = str(e)
             self.db.commit()
             raise
+
     
     async def generate_video_summary(self, youtube_source_id: int) -> str:
         """
@@ -386,9 +422,12 @@ Keep the summary concise but informative (under 500 words). Use markdown formatt
         self,
         transcript_text: str,
         video_title: str,
-        duration_seconds: float
+        duration_seconds: float,
+        max_insights: int = 5
     ) -> str:
         """Build the LLM prompt for insight extraction."""
+        insights_range = f"{max(2, max_insights - 2)}-{max_insights}" if max_insights > 3 else f"up to {max_insights}"
+        
         return f'''Analyze this YouTube video transcript and identify the most engaging segments that would make great YouTube Shorts (15-60 seconds each).
 
 VIDEO TITLE: {video_title}
@@ -400,7 +439,7 @@ TRANSCRIPT (with timestamps in [MM:SS] format):
 ---
 
 YOUR TASK:
-Find 3-5 key moments that would make viral YouTube Shorts. For each moment:
+Find {insights_range} key moments that would make viral YouTube Shorts. For each moment:
 
 **CRITICAL TIMESTAMP INSTRUCTIONS:**
 - Each line in the transcript starts with [MM:SS] which indicates the START TIME
@@ -427,7 +466,7 @@ Return your analysis as JSON with this exact structure:
     {{
       "start_time": <START TIME IN SECONDS - must be from the [MM:SS] timestamps>,
       "end_time": <END TIME IN SECONDS - start_time + 15 to 60 seconds>,
-      "transcript_text": "<exact text from this segment>",
+      "transcript_text": "<exact text from this segment, keep it SHORT - max 200 chars>",
       "summary": "<1-2 sentence summary of the insight>",
       "hook": "<suggested 3-second hook for Shorts>",
       "key_points": ["<point 1>", "<point 2>"],
@@ -437,7 +476,8 @@ Return your analysis as JSON with this exact structure:
   ]
 }}
 
-Focus on QUALITY over quantity. Only include truly compelling moments.'''
+IMPORTANT: Keep transcript_text SHORT (max 200 characters). Focus on QUALITY over quantity. Only include truly compelling moments.'''
+
 
     async def create_article_from_insight(
         self,

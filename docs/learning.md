@@ -92,3 +92,40 @@ git push -u origin main
    - Use `clean_start.sh` for fresh starts (clears caches)
    - Use `start.sh` for regular starts
    - Use `stop.sh` to cleanly stop services
+
+---
+
+## 2026-02-01: YouTube Analysis JSON Truncation
+
+### Problem
+YouTube transcript analysis failed with "Invalid JSON: EOF while parsing a string" error. The LLM response was being cut off mid-JSON.
+
+### Root Cause
+1. Long transcripts (37+ minute videos) produced prompts too large
+2. `max_tokens=4000` was insufficient for the expected JSON response
+3. The LLM generated very long `transcript_text` fields in the output
+
+### Solution
+Applied multi-pronged fix in `youtube_transcript_service.py`:
+```python
+# 1. Truncate transcripts > 15000 chars
+if len(transcript_text) > 15000:
+    transcript_text = transcript_text[:15000] + "\n...[truncated]"
+
+# 2. Increased max_tokens from 4000 to 8000
+max_tokens=8000
+
+# 3. Added retry logic with fewer insights
+for attempt in range(2):
+    if attempt == 1:
+        # Request only 3 insights on retry
+        prompt = build_prompt(max_insights=3)
+
+# 4. Updated prompt to request shorter transcript_text (max 200 chars)
+```
+
+### Prevention
+- Always truncate large inputs to LLMs to prevent oversized prompts
+- Use generous `max_tokens` for structured JSON responses
+- Implement retry logic with simplified prompts for robustness
+- Request shorter/smaller outputs in the prompt itself
