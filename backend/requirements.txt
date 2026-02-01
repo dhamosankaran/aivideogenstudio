@@ -12,6 +12,7 @@ alembic==1.14.0
 google-generativeai==0.8.3
 openai==1.55.3
 anthropic==0.39.0
+openai-whisper  # Speech recognition (Whisper model)
 
 # TTS Providers
 google-cloud-texttospeech==2.18.0
@@ -23,11 +24,14 @@ beautifulsoup4==4.12.3
 requests==2.32.3
 yt-dlp==2024.12.23
 youtube-transcript-api==1.2.4
+newsapi-python  # News API client
 
 # Video Processing
 moviepy==1.0.3
 pydub==0.25.1
 
+# Python 3.13+ Compatibility
+audioop-lts  # Required for pydub on Python 3.13+ (audioop was removed from stdlib)
 
 # Utilities
 httpx==0.28.1
