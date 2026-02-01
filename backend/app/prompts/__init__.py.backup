@@ -1,0 +1,18 @@
+"""
+Article analysis and script generation prompts
+"""
+from .article_analysis import (
+    ARTICLE_ANALYSIS_PROMPT,
+    build_article_analysis_prompt
+)
+from .script_generation import (
+    SCRIPT_GENERATION_PROMPT,
+    build_script_generation_prompt
+)
+
+__all__ = [
+    "ARTICLE_ANALYSIS_PROMPT",
+    "build_article_analysis_prompt",
+    "SCRIPT_GENERATION_PROMPT",
+    "build_script_generation_prompt"
+]
