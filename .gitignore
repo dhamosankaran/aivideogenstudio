@@ -9,6 +9,8 @@
 .env.test.local
 .env.production.local
 *.env
+*.env.bak
+.env.bak
 !.env.example
 
 # Python
