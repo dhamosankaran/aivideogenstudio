@@ -70,5 +70,7 @@ frontend/.vite/
 !backend/app/schemas/*.json
 !docs/**/*.json
 !frontend/src/assets/**
+!backend/assets/*.png
+!backend/assets/*.jpg
 !backend/assets/end_screens/**
 !backend/assets/music/**
