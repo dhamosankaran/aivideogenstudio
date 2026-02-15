@@ -1,19 +1,18 @@
 import os
 import math
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional, Tuple, Dict, Any
 import logging
 
 from sqlalchemy.orm import Session
-from moviepy.editor import (
+from moviepy import (
     ColorClip, 
     TextClip, 
     CompositeVideoClip, 
     AudioFileClip,
     ImageClip
 )
-from moviepy.config import change_settings
 
 from app.models import Script, Audio, Video, Article
 from app.config import settings
@@ -105,7 +104,7 @@ class VideoCompositionService:
             # Update Record (Completed)
             video.file_path = str(output_path)
             video.status = "completed"
-            video.completed_at = datetime.utcnow()
+            video.completed_at = datetime.now(timezone.utc)
             video.processing_time = (datetime.now() - start_time).total_seconds()
             
             # Get file size
@@ -162,8 +161,8 @@ class VideoCompositionService:
         
         # 3. Composite
         final_video = CompositeVideoClip([bg_clip] + subtitle_clips)
-        final_video = final_video.set_audio(audio_clip)
-        final_video = final_video.set_duration(duration)
+        final_video = final_video.with_audio(audio_clip)
+        final_video = final_video.with_duration(duration)
         
         # 4. Write File
         # preset='ultrafast' for speed during dev/MVP
@@ -212,19 +211,18 @@ class VideoCompositionService:
             if i == len(chunks) - 1:
                 end_time = duration
                 
+            # Create text clip using MoviePy 2.x API
             txt_clip = (
                 TextClip(
-                    chunk, 
-                    fontsize=70, 
+                    text=chunk,
+                    font_size=70, 
                     color='white', 
-                    font='Arial-Bold', 
-                    method='caption', # Word wrap
+                    font='/System/Library/Fonts/Helvetica.ttc', 
                     size=(w - 100, None), # Margins
-                    align='center'
                 )
-                .set_position('center')
-                .set_start(start_time)
-                .set_duration(end_time - start_time)
+                .with_position('center')
+                .with_start(start_time)
+                .with_duration(end_time - start_time)
             )
             clips.append(txt_clip)
             
@@ -279,7 +277,8 @@ class VideoCompositionService:
         video_id: int,
         youtube_title: Optional[str] = None,
         youtube_description: Optional[str] = None,
-        hashtags: Optional[List[str]] = None
+        hashtags: Optional[List[str]] = None,
+        youtube_tags: Optional[List[str]] = None,
     ) -> Optional[Video]:
         """
         Update video metadata for YouTube upload.
@@ -288,7 +287,8 @@ class VideoCompositionService:
             video_id: Video ID to update
             youtube_title: YouTube title (max 100 chars)
             youtube_description: YouTube description (max 5000 chars)
-            hashtags: List of hashtags
+            hashtags: List of hashtags (stored on script)
+            youtube_tags: List of search tags (stored on video)
             
         Returns:
             Updated Video or None if not found
@@ -302,10 +302,13 @@ class VideoCompositionService:
         if youtube_description is not None:
             video.youtube_description = youtube_description[:5000]  # Enforce limit
         if hashtags is not None:
-            # Store as JSON array
-            video.hashtags = hashtags
+            # Store hashtags on the script record
+            if video.script:
+                video.script.hashtags = hashtags
+        if youtube_tags is not None:
+            video.youtube_tags = youtube_tags
         
-        video.updated_at = datetime.utcnow()
+        video.updated_at = datetime.now(timezone.utc)
         
         self.db.commit()
         self.db.refresh(video)
@@ -327,7 +330,7 @@ class VideoCompositionService:
             return None
         
         video.validation_status = "approved"
-        video.approved_at = datetime.utcnow()
+        video.approved_at = datetime.now(timezone.utc)
         
         self.db.commit()
         self.db.refresh(video)

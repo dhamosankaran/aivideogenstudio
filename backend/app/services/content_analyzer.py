@@ -7,12 +7,13 @@ Analyzes articles on multiple dimensions and ranks them for video generation.
 import json
 import logging
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from app.models import Article
 from app.schemas import ArticleScores
 from app.services.base_provider import BaseLLMProvider
 from app.services.provider_factory import ProviderFactory, LLMProvider
+from app.utils.llm_helpers import parse_llm_json
 from app.prompts import build_article_analysis_prompt
 
 logger = logging.getLogger(__name__)
@@ -70,18 +71,17 @@ class ContentAnalyzer:
                 source=source_name
             )
             
-            # Get LLM response
+            # Get LLM response - use JSON mode without response_schema to avoid malformed output
             response_text = await self.llm.generate_text(
                 prompt=prompt,
                 temperature=0.3,
-                max_tokens=4000,
-                response_mime_type="application/json",
-                response_schema=ArticleScores
+                max_tokens=8192,
+                response_mime_type="application/json"
             )
             
             # Validate and create ArticleScores
             # First try to clean the response (handles markdown code blocks from Gemini)
-            parsed_data = self._parse_llm_response(response_text)
+            parsed_data = parse_llm_json(response_text)
             
             if parsed_data:
                 try:
@@ -147,7 +147,7 @@ class ContentAnalyzer:
                     article.key_topics = scores.key_topics
                     article.why_interesting = scores.why_interesting
                     article.final_score = self._calculate_final_score(scores)
-                    article.analyzed_at = datetime.utcnow()
+                    article.analyzed_at = datetime.now(timezone.utc)
                     
                     analyzed_articles.append(article)
             
@@ -217,7 +217,7 @@ class ContentAnalyzer:
         """
         from datetime import timedelta
         
-        since = datetime.utcnow() - timedelta(days=days)
+        since = datetime.now(timezone.utc) - timedelta(days=days)
         
         query = self.db.query(Article).filter(
             Article.final_score.isnot(None),
@@ -249,33 +249,4 @@ class ContentAnalyzer:
         )
         return round(final, 2)
     
-    def _parse_llm_response(self, response: str) -> Optional[dict]:
-        """
-        Parse LLM JSON response.
-        
-        Args:
-            response: Raw LLM response string
-            
-        Returns:
-            Parsed dict or None if invalid
-        """
-        try:
-            # Try to extract JSON from response (remove markdown if present)
-            response = response.strip()
-            
-            # Remove markdown code blocks if present
-            if response.startswith("```"):
-                lines = response.split("\n")
-                response = "\n".join(lines[1:-1])  # Remove first and last line
-            
-            # Parse JSON
-            data = json.loads(response)
-            return data
-            
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON parse error: {str(e)}")
-            logger.error(f"Response was: {response}")
-            return None
-        except Exception as e:
-            logger.error(f"Error parsing LLM response: {str(e)}")
-            return None
+    # _parse_llm_response removed — now using shared parse_llm_json from app.utils

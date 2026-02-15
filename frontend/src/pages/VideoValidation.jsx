@@ -1,8 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { fetchPendingVideos, fetchVideoDetail, updateVideoMetadata, approveVideo, rejectVideo, getVideoUrl, generateMetadata, generateThumbnail, getThumbnailPrompt } from '../services/videoApi';
 import './VideoValidation.css';
 
-export default function VideoValidation({ initialVideoId }) {
+export default function VideoValidation() {
+    const [searchParams] = useSearchParams();
+    const initialVideoId = searchParams.get('videoId');
+
     const [videos, setVideos] = useState([]);
     const [selectedVideoId, setSelectedVideoId] = useState(null);
     const [videoDetail, setVideoDetail] = useState(null);
@@ -24,7 +28,7 @@ export default function VideoValidation({ initialVideoId }) {
     const [showPromptEditor, setShowPromptEditor] = useState(false);
     const [loadingPrompt, setLoadingPrompt] = useState(false);
 
-    // Handle initial navigation
+    // Handle initial navigation from query params
     useEffect(() => {
         if (initialVideoId) {
             handleSelectVideo(initialVideoId);
@@ -97,6 +101,7 @@ export default function VideoValidation({ initialVideoId }) {
             setEditedTitle(data.video.youtube_title || data.script?.catchy_title || '');
             setEditedDescription(data.video.youtube_description || data.script?.video_description || '');
             setEditedHashtags(data.script?.hashtags?.join(' ') || '');
+            setEditedTags(data.video.youtube_tags?.join(', ') || '');
         } catch (err) {
             setError(err.message);
             console.error('Failed to load video detail:', err);
@@ -111,10 +116,12 @@ export default function VideoValidation({ initialVideoId }) {
         setSaving(true);
         try {
             const hashtags = editedHashtags.split(' ').filter(h => h.trim());
+            const tags = editedTags.split(',').map(t => t.trim()).filter(t => t);
             await updateVideoMetadata(selectedVideoId, {
                 youtube_title: editedTitle,
                 youtube_description: editedDescription,
-                hashtags: hashtags
+                hashtags: hashtags,
+                youtube_tags: tags
             });
 
             alert('Metadata saved successfully!');
@@ -128,12 +135,29 @@ export default function VideoValidation({ initialVideoId }) {
 
     const handleApprove = async () => {
         if (!selectedVideoId) return;
-        if (!confirm('Approve this video for YouTube upload?')) return;
+        if (!confirm('Approve this video and upload to YouTube as Private?')) return;
 
         setSaving(true);
         try {
-            await approveVideo(selectedVideoId);
-            alert('Video approved! Ready for YouTube upload.');
+            const hashtags = editedHashtags.split(' ').filter(h => h.trim());
+            const tags = editedTags.split(',').map(t => t.trim()).filter(t => t);
+
+            const result = await approveVideo(selectedVideoId, {
+                youtube_title: editedTitle,
+                youtube_description: editedDescription,
+                hashtags: hashtags,
+                youtube_tags: tags,
+                privacy_status: 'private',  // Safe zone: always start private
+            });
+
+            if (result.youtube_uploaded) {
+                alert(`✅ Video approved and uploaded to YouTube!\n\nURL: ${result.youtube_url}\nStatus: ${result.privacy_status}\n\nCheck YouTube Studio to set it public when ready.`);
+            } else if (result.upload_warning) {
+                alert(`⚠️ Video approved locally.\n\n${result.upload_warning}\n\nTo enable YouTube uploads, run:\npython -m app.services.youtube_upload_service --auth`);
+            } else {
+                alert('Video approved! Ready for YouTube upload.');
+            }
+
             setVideoDetail(null);
             setSelectedVideoId(null);
             await loadPendingVideos();
@@ -467,12 +491,12 @@ export default function VideoValidation({ initialVideoId }) {
                                         </div>
 
                                         <div className="form-group" style={{ marginBottom: '1.5rem' }}>
-                                            <label>Description</label>
+                                            <label>Description ({editedDescription.length}/5000)</label>
                                             <textarea
                                                 className="form-input"
                                                 rows={6}
                                                 value={editedDescription}
-                                                onChange={(e) => setEditedDescription(e.target.value)}
+                                                onChange={(e) => setEditedDescription(e.target.value.slice(0, 5000))}
                                                 placeholder="Video description..."
                                             />
                                         </div>
@@ -490,15 +514,16 @@ export default function VideoValidation({ initialVideoId }) {
                                         </div>
 
                                         <div className="form-group">
-                                            <label>Tags (for YouTube search)</label>
+                                            <label>Tags (for YouTube search) ({editedTags.length}/500)</label>
                                             <input
                                                 type="text"
                                                 className="form-input"
                                                 value={editedTags}
-                                                onChange={(e) => setEditedTags(e.target.value)}
+                                                onChange={(e) => setEditedTags(e.target.value.slice(0, 500))}
                                                 placeholder="AI, artificial intelligence, tech news"
+                                                maxLength={500}
                                             />
-                                            <small style={{ color: '#666', fontSize: '0.75rem' }}>Comma-separated. Useful for commonly misspelled terms.</small>
+                                            <small style={{ color: editedTags.length > 450 ? '#ef4444' : '#666', fontSize: '0.75rem' }}>Comma-separated. Max 500 characters for YouTube compliance.</small>
                                         </div>
                                     </div>
 

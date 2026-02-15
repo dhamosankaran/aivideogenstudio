@@ -11,7 +11,7 @@ from typing import List
 from app.database import get_db
 from app.schemas import FeedCreate, FeedUpdate, FeedResponse, JobResponse
 from app.services.feed_service import FeedService
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
 router = APIRouter(prefix="/api/feeds", tags=["feeds"])
@@ -143,7 +143,7 @@ async def fetch_feed(
         job_id=job_id,
         status="pending",
         message=f"Fetching articles from feed {feed_id}",
-        created_at=datetime.utcnow()
+        created_at=datetime.now(timezone.utc)
     )
 
 async def _fetch_single_feed_task(db: Session, feed_id: int, job_id: str):
@@ -176,7 +176,7 @@ async def sync_feeds(
         job_id=job_id,
         status="pending",
         message="Feed sync started",
-        created_at=datetime.utcnow()
+        created_at=datetime.now(timezone.utc)
     )
 
 

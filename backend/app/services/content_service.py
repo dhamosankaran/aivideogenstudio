@@ -7,7 +7,7 @@ Handles article listing, filtering, selection, and script generation triggering.
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, and_
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 from app.models import Article, Script, Feed
 from app.services.script_service import ScriptService
@@ -123,7 +123,7 @@ class ContentService:
         
         for article in articles:
             article.is_selected = True
-            article.selected_at = datetime.utcnow()
+            article.selected_at = datetime.now(timezone.utc)
         
         self.db.commit()
         
@@ -191,7 +191,7 @@ class ContentService:
                     article.key_topics = article.key_points if article.key_points else ["YouTube Insight"]
                     article.why_interesting = article.summary or article.description or "Key insight from YouTube video"
                     article.category = "youtube_insight"
-                    article.analyzed_at = datetime.utcnow()
+                    article.analyzed_at = datetime.now(timezone.utc)
                     analyzed_count += 1
                     logger.info(f"YouTube article {article.id} populated from insight data")
                 elif needs_analysis:
@@ -209,7 +209,7 @@ class ContentService:
                             article.key_topics = scores.key_topics
                             article.why_interesting = scores.why_interesting
                             article.final_score = analyzer._calculate_final_score(scores)
-                            article.analyzed_at = datetime.utcnow()
+                            article.analyzed_at = datetime.now(timezone.utc)
                             analyzed_count += 1
                             logger.info(f"Article {article.id} analyzed successfully")
                         else:
@@ -234,7 +234,7 @@ class ContentService:
                 # Update article status
                 article.is_processed = True
                 article.is_selected = True
-                article.selected_at = datetime.utcnow()
+                article.selected_at = datetime.now(timezone.utc)
                 
                 # Update script with content type
                 script.content_type = content_type
@@ -304,7 +304,7 @@ class ContentService:
         # Update article with analysis
         article.relevance_score = analysis["score"]
         article.suggested_content_type = analysis["content_type"]
-        article.analyzed_at = datetime.utcnow()
+        article.analyzed_at = datetime.now(timezone.utc)
         
         self.db.commit()
         
@@ -328,7 +328,7 @@ class ContentService:
         """Parse date range string to datetime."""
         from datetime import timedelta
         
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         
         if date_range == "yesterday":
             return now - timedelta(days=1)

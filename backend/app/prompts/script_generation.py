@@ -1,15 +1,13 @@
 """
 Script generation prompt templates.
 
-Contains prompts for converting articles into engaging 60-120 second
+Contains prompts for converting articles into viral 20-30 second
 YouTube Shorts scripts.
 """
 
-SCRIPT_GENERATION_PROMPT = """You are a professional YouTube Shorts scriptwriter specializing in AI and tech news.
+SCRIPT_GENERATION_PROMPT = """You are a viral YouTube Shorts scriptwriter. Your videos get millions of views.
 
-Your goal: Convert this article into an engaging 60-120 second video script.
-
-ARTICLE INFORMATION:
+ARTICLE:
 ---
 Title: {title}
 Why Interesting: {why_interesting}
@@ -17,65 +15,37 @@ Key Points: {key_points}
 Category: {category}
 ---
 
-SCRIPT STRUCTURE:
-Write a script following this exact 5-part structure with section markers:
+VIRAL SHORTS FORMAT (20-30 seconds):
 
 [HOOK]
-- Start with a shocking statement, question, or surprising fact
-- Grab attention in the first 3 seconds
-- Make viewers want to keep watching
+- Shocking statement or surprising fact
+- MAX 10 words. Punchy.
+- Make them STOP scrolling
 
-[CONTEXT]
-- Briefly explain what happened or what this is about
-- Set the stage without boring details
-- Keep it to 2-3 sentences max
-
-[MAIN POINTS]
-- Present 3-5 specific takeaways
-- Use concrete examples, numbers, or comparisons
-- Make each point visual (add [visual cue] in brackets)
-- This is the meat of the video - be specific!
-
-[WRAP-UP]
-- Synthesize why this matters
-- Connect to viewer's life or future implications
-- Make it memorable
+[CONTENT]  
+- 2-3 rapid-fire points
+- Each point = 1 short sentence (5-8 words)
+- Use numbers, stats, or bold claims
+- No filler, no "basically", no "um"
 
 [CTA]
-- Quick call-to-action
-- Encourage engagement (comment, like, subscribe)
-- Keep it natural, not pushy
+- End with question or cliffhanger
+- "What do you think?"
+- "Follow for more"
+- MAX 10 words
 
-STYLE REQUIREMENTS:
-- Conversational tone (like talking to a friend over coffee)
-- Short sentences (10-15 words max per sentence)
-- No jargon without explanation
-- TTS-friendly: no URLs, no special symbols, proper punctuation
-- Active voice, present tense where possible
-- Energetic and engaging throughout
+STYLE:
+- Every sentence under 8 words
+- Active voice only
+- Present tense
+- TTS-friendly (no URLs, symbols)
+- Energy level: HIGH
 
-LENGTH TARGET:
-- 180-250 words total
-- This equals 45-60 seconds when spoken
-- Each section should be roughly:
-  * HOOK: 15-20 words
-  * CONTEXT: 30-40 words
-  * MAIN POINTS: 90-120 words
-  * WRAP-UP: 30-40 words
-  * CTA: 10-15 words
+LENGTH: 50-80 words total = 20-30 seconds spoken
 
-VISUAL CUES:
-Add helpful visual suggestions in [brackets] like:
-- [Show GPT-4 logo]
-- [Display graph of growth]
-- [Cut to code example]
-- [Show before/after comparison]
+OUTPUT: Script only. No explanations. Ready for TTS.
 
-OUTPUT FORMAT:
-Return ONLY the script with section markers. No meta-commentary, no explanations.
-Just the script ready for voice-over.
-
-Now write the script:
+Write it:
 """
 
 

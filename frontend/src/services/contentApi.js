@@ -144,3 +144,35 @@ export async function fetchContentTypes() {
     const data = await response.json();
     return data.content_types;
 }
+
+/**
+ * Import manually pasted content as an article
+ * 
+ * @param {Object} params - Import parameters
+ * @param {string} params.title - Article title
+ * @param {string} params.content - Article content
+ * @param {string} [params.sourceUrl] - Optional source URL
+ * @param {string} [params.contentType] - Content type (default: daily_update)
+ * @returns {Promise<Object>} Import result with article ID and analysis status
+ */
+export async function importManualContent({ title, content, sourceUrl, contentType = 'daily_update' }) {
+    const response = await fetch(`${API_BASE_URL}/api/content/articles/manual`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            title,
+            content,
+            source_url: sourceUrl || null,
+            content_type: contentType
+        }),
+    });
+
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || `Failed to import content: ${response.statusText}`);
+    }
+
+    return response.json();
+}

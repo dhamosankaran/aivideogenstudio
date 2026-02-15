@@ -111,6 +111,7 @@ class ClipExtractorService:
         # Format: download best quality up to 1080p, trim to section
         cmd = [
             "yt-dlp",
+            "--js-runtime", "node",
             "--format", "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
             "--merge-output-format", "mp4",
             "--download-sections", f"*{start_time}-{end_time}",
@@ -159,57 +160,110 @@ class ClipExtractorService:
         end_time: float
     ) -> Path:
         """
-        Fallback method: Download full video and trim with ffmpeg.
+        Fallback method 2: Get stream URLs and use ffmpeg to download only the slice.
         
-        Used when yt-dlp's --download-sections is not available.
+        This is MUCH faster than downloading the full video.
         """
-        temp_path = self.output_dir / f"temp_{video_id}.mp4"
         clip_path = self.get_clip_path(video_id, start_time, end_time)
         
         try:
-            # Download full video (or use existing temp)
-            if not temp_path.exists():
-                cmd_download = [
-                    "yt-dlp",
-                    "--format", "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
-                    "--merge-output-format", "mp4",
-                    "--output", str(temp_path),
-                    "--no-playlist",
-                    "--quiet",
-                    youtube_url
-                ]
-                
-                result = subprocess.run(cmd_download, capture_output=True, text=True, timeout=600)
-                if result.returncode != 0:
-                    raise ValueError(f"Download failed: {result.stderr}")
+            logger.info(f"Using direct stream + ffmpeg fallback for {video_id}")
             
-            # Trim with ffmpeg
+            # Step 1: Get direct stream URLs for video and audio
+            cmd_get_url = [
+                "yt-dlp",
+                "--js-runtime", "node",
+                "-g",
+                "--format", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]",
+                "--no-playlist",
+                "--no-check-certificate",
+                youtube_url
+            ]
+            
+            result = subprocess.run(cmd_get_url, capture_output=True, text=True, timeout=60)
+            if result.returncode != 0:
+                raise ValueError(f"Failed to get stream URLs: {result.stderr}")
+            
+            urls = result.stdout.strip().split('\n')
+            if not urls:
+                raise ValueError("No stream URLs returned")
+            
+            video_url = urls[0]
+            audio_url = urls[1] if len(urls) > 1 else video_url
+            
+            # Step 2: Use ffmpeg to stream and save only the segment
+            # -ss before -i is fast seek
             duration = end_time - start_time
-            cmd_trim = [
+            cmd_ffmpeg = [
                 "ffmpeg",
-                "-i", str(temp_path),
                 "-ss", str(start_time),
+                "-i", video_url,
+                "-ss", str(start_time),
+                "-i", audio_url,
                 "-t", str(duration),
+                "-map", "0:v:0",
+                "-map", "1:a:0",
                 "-c:v", "libx264",
                 "-c:a", "aac",
+                "-preset", "veryfast",
                 "-y",
                 "-loglevel", "error",
                 str(clip_path)
             ]
             
-            result = subprocess.run(cmd_trim, capture_output=True, text=True, timeout=120)
+            # If only one URL (combined format)
+            if video_url == audio_url:
+                cmd_ffmpeg = [
+                    "ffmpeg",
+                    "-ss", str(start_time),
+                    "-i", video_url,
+                    "-t", str(duration),
+                    "-c:v", "libx264",
+                    "-c:a", "aac",
+                    "-preset", "veryfast",
+                    "-y",
+                    "-loglevel", "error",
+                    str(clip_path)
+                ]
+
+            result = subprocess.run(cmd_ffmpeg, capture_output=True, text=True, timeout=180)
             if result.returncode != 0:
-                raise ValueError(f"Trim failed: {result.stderr}")
+                raise ValueError(f"Direct stream download failed: {result.stderr}")
             
             return clip_path
             
+        except Exception as e:
+            logger.error(f"Enhanced fallback failed: {str(e)}")
+            # If even this fails, try the absolute last resort: full download (but limited quality)
+            return await self._absolute_fallback_full_download(video_id, youtube_url, start_time, end_time)
+
+    async def _absolute_fallback_full_download(self, video_id, youtube_url, start_time, end_time) -> Path:
+        """Absolute last resort: download full video at low quality and trim."""
+        clip_path = self.get_clip_path(video_id, start_time, end_time)
+        temp_path = self.output_dir / f"low_res_{video_id}.mp4"
+        
+        logger.warning(f"Using absolute fallback (full download low res) for {video_id}")
+        
+        try:
+            cmd_dl = [
+                "yt-dlp",
+                "--format", "worst[ext=mp4]/worst",
+                "--output", str(temp_path),
+                "--no-playlist",
+                "--quiet",
+                youtube_url
+            ]
+            subprocess.run(cmd_dl, timeout=300)
+            
+            duration = end_time - start_time
+            cmd_trim = ["ffmpeg", "-i", str(temp_path), "-ss", str(start_time), "-t", str(duration), "-y", str(clip_path)]
+            subprocess.run(cmd_trim, timeout=60)
+            
+            return clip_path
         finally:
-            # Clean up temp file
             if temp_path.exists():
-                try:
-                    temp_path.unlink()
-                except:
-                    pass
+                temp_path.unlink()
+
     
     def _get_clip_metadata(self, clip_path: Path) -> dict:
         """Get metadata for a clip using ffprobe."""

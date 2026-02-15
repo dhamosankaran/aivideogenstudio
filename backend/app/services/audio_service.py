@@ -9,14 +9,14 @@ Handles:
 """
 
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, List
 from sqlalchemy.orm import Session
 from pydub import AudioSegment
 from io import BytesIO
 
-from app.models import Audio, Script
+from app.models import Audio, Script, Article
 from app.services.provider_factory import ProviderFactory
 from app.services.base_provider import TTSProvider
 from app.config import settings
@@ -96,6 +96,15 @@ class AudioService:
             # Use formatted_script for TTS (cleaned of section markers)
             text_to_synthesize = script.formatted_script or script.raw_script
             
+            # Select voice based on content type
+            # Book reviews use "nova" for clearer articulation on longer narration
+            article = self.db.query(Article).filter(Article.id == script.article_id).first() if script.article_id else None
+            if article and article.suggested_content_type == "book_review" and not voice:
+                voice = "nova"
+                audio.voice = voice
+                import logging
+                logging.getLogger(__name__).info("Book review detected – using 'nova' voice for clearer articulation")
+            
             # Generate audio bytes
             audio_bytes = await tts_provider.synthesize_speech(
                 text=text_to_synthesize,
@@ -134,7 +143,7 @@ class AudioService:
             audio.file_size = file_size
             audio.generation_cost = generation_cost
             audio.status = "completed"
-            audio.completed_at = datetime.utcnow()
+            audio.completed_at = datetime.now(timezone.utc)
             
             self.db.commit()
             self.db.refresh(audio)

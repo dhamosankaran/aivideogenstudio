@@ -16,7 +16,7 @@ from typing import Optional, List
 
 from app.database import get_db
 from app.services.audio_service import AudioService
-from app.schemas_audio import (
+from app.schemas.audio import (
     AudioGenerateRequest,
     AudioResponse,
     AudioListResponse

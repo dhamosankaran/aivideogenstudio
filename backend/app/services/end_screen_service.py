@@ -26,7 +26,29 @@ class EndScreenService:
         "daily_update": "Subscribe for Daily AI News!",
         "big_tech": "Follow for In-Depth Analysis!",
         "leader_quote": "Get Inspired Daily!",
-        "arxiv_paper": "Learn Cutting-Edge AI!"
+        "arxiv_paper": "Learn Cutting-Edge AI!",
+        "book_review": "Subscribe for Book Reviews!",
+        "youtube_import": "Subscribe for More Insights!"
+    }
+    
+    # Content-type to channel name mapping
+    CHANNEL_NAMES = {
+        "daily_update": "@AINewsDaily",
+        "big_tech": "@AINewsDaily",
+        "leader_quote": "@AINewsDaily",
+        "arxiv_paper": "@AINewsDaily",
+        "book_review": "@60SecondBooks",
+        "youtube_import": "@AINewsDaily",
+    }
+    
+    # Content-type specific footer messages
+    FOOTER_MESSAGES = {
+        "daily_update": "🔔 Turn on notifications!",
+        "big_tech": "🔔 Turn on notifications!",
+        "leader_quote": "💡 Daily Wisdom Awaits!",
+        "arxiv_paper": "🧠 Stay Ahead of AI Research!",
+        "book_review": "📚 More Book Summaries Weekly!",
+        "youtube_import": "🔔 Turn on notifications!",
     }
     
     def __init__(self):
@@ -35,7 +57,8 @@ class EndScreenService:
     def generate_end_screen(
         self,
         content_type: str = "daily_update",
-        channel_name: str = "@AINewsDaily"
+        channel_name: str = None,
+        force_regenerate: bool = False
     ) -> Path:
         """
         Generate end screen template.
@@ -43,17 +66,25 @@ class EndScreenService:
         Args:
             content_type: Type of content for customized CTA
             channel_name: Channel name to display
+            force_regenerate: If True, regenerate even if cached file exists
             
         Returns:
             Path to generated end screen
         """
-        logger.info(f"Generating end screen for {content_type}")
+        # Auto-select channel name based on content type if not explicitly provided
+        if channel_name is None:
+            channel_name = self.CHANNEL_NAMES.get(content_type, "@AINewsDaily")
+        
+        logger.info(f"Generating end screen for {content_type} (channel: {channel_name})")
         
         # Check if already exists (reuse templates)
         output_path = self.OUTPUT_DIR / f"end_{content_type}.png"
-        if output_path.exists():
+        if output_path.exists() and not force_regenerate:
             logger.info(f"Using existing end screen: {output_path}")
             return output_path
+        elif output_path.exists() and force_regenerate:
+            output_path.unlink()
+            logger.info(f"Force regenerating end screen: {output_path}")
         
         # Create canvas with gradient background
         img = self._create_background()
@@ -61,9 +92,9 @@ class EndScreenService:
         
         # Load fonts
         try:
-            font_large = ImageFont.truetype("Arial-Bold.ttf", 80)
-            font_medium = ImageFont.truetype("Arial-Bold.ttf", 60)
-            font_small = ImageFont.truetype("Arial.ttf", 40)
+            font_large = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 80)
+            font_medium = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 60)
+            font_small = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 40)
         except:
             try:
                 font_large = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 80)
@@ -88,8 +119,9 @@ class EndScreenService:
         # Add channel name
         self._draw_centered_text(draw, 1400, channel_name, font_small, 'gray')
         
-        # Add footer text
-        self._draw_centered_text(draw, 1550, "🔔 Turn on notifications!", font_small, 'darkgray')
+        # Add content-type-specific footer text
+        footer_text = self.FOOTER_MESSAGES.get(content_type, "🔔 Turn on notifications!")
+        self._draw_centered_text(draw, 1550, footer_text, font_small, 'darkgray')
         
         # Save
         img.save(output_path)

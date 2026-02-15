@@ -22,7 +22,9 @@ from app.schemas.youtube_schemas import (
     ModeAGenerateRequest,
     ModeAGenerateResponse,
     ModeBGenerateRequest,
-    ModeBGenerateResponse
+    ModeBGenerateResponse,
+    TrimAndGenerateRequest,
+    TrimAndGenerateResponse
 )
 
 logger = logging.getLogger(__name__)
@@ -453,6 +455,139 @@ async def reanalyze_source(
         created_at=source.created_at,
         analyzed_at=source.analyzed_at
     )
+
+
+@router.post("/sources/{source_id}/insights/{insight_index}/trim-and-generate", response_model=TrimAndGenerateResponse)
+async def trim_and_generate_video(
+    source_id: int,
+    insight_index: int,
+    request: TrimAndGenerateRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    """
+    Trim a clip from the YouTube video and generate a new video.
+    
+    Pipeline:
+    1. Download the full insight segment
+    2. Trim to user-specified start/end times
+    3. Generate commentary script
+    4. Queue TTS + video rendering in background
+    """
+    from app.services.clip_extractor_service import ClipExtractorService
+    from app.services.script_service import ScriptService
+    from app.models import Script, Article
+    
+    service = YouTubeTranscriptService(db)
+    source = service.get_source(source_id)
+    
+    if not source:
+        raise HTTPException(status_code=404, detail="YouTube source not found")
+    
+    if not source.insights or insight_index >= len(source.insights):
+        raise HTTPException(status_code=400, detail=f"Invalid insight index: {insight_index}")
+    
+    insight = source.insights[insight_index]
+    
+    # Validate trim times
+    if request.start_time >= request.end_time:
+        raise HTTPException(status_code=400, detail="start_time must be less than end_time")
+    
+    trim_duration = request.end_time - request.start_time
+    if trim_duration < 3:
+        raise HTTPException(status_code=400, detail="Trimmed clip must be at least 3 seconds")
+    if trim_duration > 120:
+        raise HTTPException(status_code=400, detail="Trimmed clip must be under 120 seconds")
+    
+    try:
+        # Step 1: Download clip using the user-specified trim times
+        clip_service = ClipExtractorService()
+        clip_path, clip_metadata = await clip_service.download_clip(
+            youtube_url=source.youtube_url,
+            video_id=source.youtube_video_id,
+            start_time=request.start_time,
+            end_time=request.end_time
+        )
+        
+        actual_duration = clip_metadata.get('duration', trim_duration)
+        
+        # Step 2: Create article for the pipeline
+        article = await service.create_article_from_insight(
+            youtube_source_id=source_id,
+            insight_index=insight_index,
+            mode="A"
+        )
+        article.clip_path = str(clip_path)
+        db.commit()
+        
+        # Step 3: Generate commentary script
+        script_service = ScriptService(db)
+        commentary_data = await script_service.generate_commentary_script(
+            insight=insight,
+            source_title=source.title or "YouTube Video",
+            source_channel=source.channel_name or "Unknown Channel",
+            mode=request.commentary_style,
+            clip_duration=actual_duration
+        )
+        
+        # Create Script record
+        script = Script(
+            article_id=article.id,
+            raw_script=f"[HOOK]\n{commentary_data['hook']}\n\n" + 
+                       "\n".join([f"[SCENE {s['scene_number']}]\n{s['text']}\n" for s in commentary_data['scenes']]) +
+                       f"\n[CTA]\n{commentary_data['call_to_action']}",
+            formatted_script=commentary_data['formatted_script'],
+            scenes=commentary_data['scenes'],
+            word_count=commentary_data['word_count'],
+            estimated_duration=commentary_data['estimated_duration'],
+            catchy_title=commentary_data['title_suggestion'],
+            has_hook=True,
+            has_cta=True,
+            status="generated",
+            script_status="pending",
+            content_type="youtube_trim",
+            video_description=commentary_data['source_attribution']
+        )
+        db.add(script)
+        db.commit()
+        db.refresh(script)
+        
+        # Step 4: Auto-approve and queue video generation
+        if request.auto_approve:
+            script.script_status = "approved"
+            script.status = "approved"
+            db.commit()
+            
+            background_tasks.add_task(
+                _generate_mode_a_video_task,
+                db,
+                script.id,
+                str(clip_path)
+            )
+            
+            return TrimAndGenerateResponse(
+                status="generating",
+                message=f"Clip trimmed ({actual_duration:.1f}s), script generated. Video rendering started.",
+                article_id=article.id,
+                script_id=script.id,
+                clip_path=str(clip_path),
+                clip_duration=actual_duration,
+                redirect_to="/validation"
+            )
+        else:
+            return TrimAndGenerateResponse(
+                status="pending_review",
+                message=f"Clip trimmed ({actual_duration:.1f}s) and script generated. Ready for review.",
+                article_id=article.id,
+                script_id=script.id,
+                clip_path=str(clip_path),
+                clip_duration=actual_duration,
+                redirect_to="/scripts"
+            )
+        
+    except Exception as e:
+        logger.error(f"Trim and generate failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Trim and generate failed: {str(e)}")
 
 
 # Background Tasks

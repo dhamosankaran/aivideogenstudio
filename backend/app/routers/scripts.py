@@ -10,7 +10,7 @@ from typing import List, Optional
 import logging
 
 from app.database import get_db
-from app.schemas_script import (
+from app.schemas.script import (
     ScriptGenerateRequest,
     ScriptResponse,
     ScriptUpdateRequest,

@@ -145,3 +145,23 @@ class ModeBGenerateResponse(BaseModel):
     script_id: Optional[int] = None
     redirect_to: str = "/scripts"
 
+
+class TrimAndGenerateRequest(BaseModel):
+    """Request to trim a clip and generate a video from it."""
+    start_time: float = Field(..., description="Trim start time in seconds")
+    end_time: float = Field(..., description="Trim end time in seconds")
+    commentary_style: str = Field(default="reaction", description="Style: reaction, analysis, or educational")
+    auto_approve: bool = Field(default=True, description="Auto-approve and start video generation")
+
+
+class TrimAndGenerateResponse(BaseModel):
+    """Response for trim-and-generate endpoint."""
+    status: str
+    message: str
+    article_id: Optional[int] = None
+    script_id: Optional[int] = None
+    clip_path: Optional[str] = None
+    clip_duration: Optional[float] = None
+    redirect_to: str = "/validation"
+
+

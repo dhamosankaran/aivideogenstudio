@@ -170,3 +170,35 @@ export async function generateModeB(sourceId, insightIndex, options = {}) {
     return response.json();
 }
 
+
+/**
+ * Trim a clip and generate a new video from it.
+ * @param {number} sourceId - YouTubeSource ID
+ * @param {number} insightIndex - Index of the insight
+ * @param {number} startTime - Trim start time in seconds
+ * @param {number} endTime - Trim end time in seconds
+ * @param {string} commentaryStyle - Style: reaction, analysis, or educational
+ * @returns {Promise<Object>} TrimAndGenerateResponse
+ */
+export async function trimAndGenerate(sourceId, insightIndex, startTime, endTime, commentaryStyle = 'reaction') {
+    const response = await fetch(
+        `${API_BASE}/api/youtube/sources/${sourceId}/insights/${insightIndex}/trim-and-generate`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                start_time: startTime,
+                end_time: endTime,
+                commentary_style: commentaryStyle,
+                auto_approve: true
+            })
+        }
+    );
+
+    if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to trim and generate video');
+    }
+
+    return response.json();
+}

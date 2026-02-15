@@ -132,7 +132,7 @@ class ThumbnailService:
         # Badge dimensions
         badge_text = scheme["badge_text"]
         try:
-            font = ImageFont.truetype("Arial-Bold.ttf", 36)
+            font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 36)
         except:
             font = ImageFont.load_default()
         
@@ -169,7 +169,7 @@ class ThumbnailService:
         
         # Load font
         try:
-            font = ImageFont.truetype("Arial-Bold.ttf", 90)
+            font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 90)
         except:
             try:
                 font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 90)

@@ -296,6 +296,17 @@ Extract key insights from any YouTube video and create viral Shorts with two cre
 - Video templates (10+ styles)
 - Advanced transitions
 - B-roll footage generation
+- **YouTube Clip Trimming UI** (NEW)
+  - Select time range from downloaded YouTube videos
+  - Manual start/end time input
+  - Generate video from trimmed clip
+  - Backend already supports via `ClipExtractorService.download_clip()`
+- **Book Summary Videos** (NEW)
+  - Search for books by title/author (Google Books API or Open Library API)
+  - Fetch book description, key points, and reviews
+  - Generate video summary script (key takeaways, why read it)
+  - Create engaging video summarizing the book
+  - Potential APIs: Google Books, Open Library, Goodreads
 
 **Estimated**: 3-4 weeks
 

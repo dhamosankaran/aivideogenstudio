@@ -1,4 +1,5 @@
 from typing import List, Optional
+from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
@@ -6,7 +7,7 @@ from pathlib import Path
 
 from app.database import get_db
 from app.services.enhanced_video_service import EnhancedVideoCompositionService
-from app.schemas_video import VideoRenderRequest, VideoResponse, VideoListResponse
+from app.schemas.video import VideoRenderRequest, VideoResponse, VideoListResponse
 from app.models import Video
 
 router = APIRouter()
@@ -176,6 +177,7 @@ def get_video_detail(
             "file_size": video.file_size,
             "youtube_title": video.youtube_title,
             "youtube_description": video.youtube_description,
+            "youtube_tags": video.youtube_tags,
             "thumbnail_path": video.thumbnail_path,
             "end_screen_path": video.end_screen_path,
             "validation_status": video.validation_status,
@@ -199,24 +201,32 @@ def get_video_detail(
     }
 
 
+class MetadataUpdateRequest(BaseModel):
+    """Request body for updating video metadata."""
+    youtube_title: Optional[str] = None
+    youtube_description: Optional[str] = None
+    hashtags: Optional[List[str]] = None
+    youtube_tags: Optional[List[str]] = None
+
+
 @router.put("/{video_id}/metadata")
 def update_video_metadata(
     video_id: int,
-    youtube_title: Optional[str] = None,
-    youtube_description: Optional[str] = None,
-    hashtags: Optional[List[str]] = None,
+    body: MetadataUpdateRequest,
     service: EnhancedVideoCompositionService = Depends(get_video_service)
 ):
     """
     Update video metadata for YouTube upload.
     
-    Allows editing title (max 100 chars), description (max 5000 chars), and hashtags.
+    Accepts a JSON body with title (max 100 chars), description (max 5000 chars),
+    hashtags, and search tags as proper arrays.
     """
     video = service.update_video_metadata(
         video_id=video_id,
-        youtube_title=youtube_title,
-        youtube_description=youtube_description,
-        hashtags=hashtags
+        youtube_title=body.youtube_title,
+        youtube_description=body.youtube_description,
+        hashtags=body.hashtags,
+        youtube_tags=body.youtube_tags
     )
     
     if not video:
@@ -225,26 +235,119 @@ def update_video_metadata(
     return video
 
 
+class ApprovePublishRequest(BaseModel):
+    """Request body for approve & publish."""
+    youtube_title: Optional[str] = None
+    youtube_description: Optional[str] = None
+    hashtags: Optional[List[str]] = None
+    youtube_tags: Optional[List[str]] = None
+    privacy_status: str = "private"  # private, unlisted, or public
+
+
 @router.post("/{video_id}/approve")
 def approve_video(
     video_id: int,
-    service: EnhancedVideoCompositionService = Depends(get_video_service)
+    body: Optional[ApprovePublishRequest] = None,
+    service: EnhancedVideoCompositionService = Depends(get_video_service),
+    db: Session = Depends(get_db)
 ):
     """
-    Approve video for YouTube upload.
+    Approve video and optionally publish to YouTube.
     
-    Updates validation_status to 'approved' and sets approved_at timestamp.
+    Workflow:
+    1. Persist final metadata from the UI to the database
+    2. Mark as approved
+    3. Upload to YouTube as Private (safe zone) via Data API v3
+    4. Return YouTube URL for final review
     """
-    video = service.approve_video(video_id)
+    import logging
+    logger = logging.getLogger(__name__)
     
+    video = db.query(Video).filter(Video.id == video_id).first()
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
     
-    return {
+    # Step 1: Persist any final metadata edits from the UI
+    if body:
+        if body.youtube_title is not None:
+            video.youtube_title = body.youtube_title[:100]
+        if body.youtube_description is not None:
+            video.youtube_description = body.youtube_description[:5000]
+        if body.youtube_tags is not None:
+            video.youtube_tags = body.youtube_tags
+        if body.hashtags is not None and video.script:
+            video.script.hashtags = body.hashtags
+    
+    # Step 2: Approve locally
+    from datetime import datetime, timezone
+    video.validation_status = "approved"
+    video.approved_at = datetime.now(timezone.utc)
+    db.commit()
+    
+    # Step 3: Attempt YouTube upload
+    youtube_result = None
+    upload_error = None
+    
+    try:
+        from app.services.youtube_upload_service import YouTubeUploadService
+        
+        if not video.file_path:
+            raise FileNotFoundError("Video file path not set")
+        
+        uploader = YouTubeUploadService()
+        
+        title = video.youtube_title or video.script.catchy_title or "Untitled"
+        description = video.youtube_description or video.script.video_description or ""
+        tags = video.youtube_tags or []
+        privacy = body.privacy_status if body else "private"
+        
+        youtube_result = uploader.upload_video(
+            file_path=video.file_path,
+            title=title,
+            description=description,
+            tags=tags,
+            category_id="27",  # Education
+            privacy_status=privacy,
+            is_short=True,
+        )
+        
+        # Persist YouTube response
+        video.youtube_video_id = youtube_result["youtube_video_id"]
+        video.youtube_url = youtube_result["youtube_url"]
+        video.uploaded_to_youtube = True
+        db.commit()
+        
+        logger.info(f"✅ Video {video_id} uploaded to YouTube: {youtube_result['youtube_url']}")
+        
+    except FileNotFoundError as e:
+        upload_error = f"YouTube upload skipped: {str(e)}"
+        logger.warning(upload_error)
+    except Exception as e:
+        upload_error = f"YouTube upload failed (video still approved locally): {str(e)}"
+        logger.warning(upload_error)
+    
+    response = {
         "status": "approved",
         "video_id": video.id,
-        "message": "Video approved and ready for upload"
+        "message": "Video approved and ready for upload",
     }
+    
+    if youtube_result:
+        response.update({
+            "youtube_uploaded": True,
+            "youtube_video_id": youtube_result["youtube_video_id"],
+            "youtube_url": youtube_result["youtube_url"],
+            "privacy_status": youtube_result["privacy_status"],
+            "message": f"Video approved and uploaded to YouTube ({youtube_result['privacy_status']})",
+        })
+    elif upload_error:
+        response.update({
+            "youtube_uploaded": False,
+            "upload_warning": upload_error,
+            "message": "Video approved locally. YouTube upload requires OAuth setup.",
+        })
+    
+    return response
 
 
 @router.post("/{video_id}/reject")
@@ -297,11 +400,24 @@ async def generate_video_metadata(
         if script and script.scenes:
             script_text = " ".join(s.get("text", "") for s in script.scenes)
         
+        # Extract book metadata for book reviews
+        book_author = None
+        takeaways = None
+        content_type = script.content_type if script else "daily_update"
+        
+        if content_type == "book_review" and article.book_source_id:
+            book = article.book_source
+            if book:
+                book_author = book.author
+                takeaways = book.key_takeaways
+        
         metadata = await service.generate_metadata(
             article_title=article.title,
             article_description=article.description or article.summary or "",
             script_content=script_text,
-            content_type=script.content_type if script else "daily_update"
+            content_type=content_type,
+            book_author=book_author,
+            takeaways=takeaways,
         )
         
         return {

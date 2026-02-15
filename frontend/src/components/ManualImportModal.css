@@ -1,0 +1,222 @@
+/**
+ * ManualImportModal Styles
+ * 
+ * Light theme, matching Content Library / ImportModal patterns
+ */
+
+/* Use shared modal overlay from ImportModal.css */
+
+.manual-import-modal {
+    background: white;
+    border-radius: 12px;
+    width: 90%;
+    max-width: 700px;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+    animation: slideUp 0.3s ease-out;
+}
+
+@keyframes slideUp {
+    from {
+        transform: translateY(20px);
+        opacity: 0;
+    }
+    to {
+        transform: translateY(0);
+        opacity: 1;
+    }
+}
+
+/* Modal Description */
+.modal-description {
+    color: #64748b;
+    font-size: 0.9rem;
+    margin-bottom: 1.5rem;
+    line-height: 1.5;
+}
+
+/* Form Styles */
+.form-group {
+    margin-bottom: 1.25rem;
+}
+
+.form-group label {
+    display: block;
+    font-weight: 600;
+    color: #1e293b;
+    margin-bottom: 0.5rem;
+    font-size: 0.9rem;
+}
+
+.form-group .required {
+    color: #ef4444;
+}
+
+.form-group .validation-hint {
+    font-weight: 400;
+    color: #f59e0b;
+    font-size: 0.8rem;
+    margin-left: 0.5rem;
+}
+
+.form-input {
+    width: 100%;
+    padding: 0.75rem 1rem;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    font-size: 1rem;
+    transition: all 0.2s;
+    box-sizing: border-box;
+}
+
+.form-input:focus {
+    outline: none;
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.form-input.invalid {
+    border-color: #f59e0b;
+    background-color: #fffbeb;
+}
+
+.form-textarea {
+    width: 100%;
+    padding: 0.75rem 1rem;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    font-size: 1rem;
+    font-family: inherit;
+    line-height: 1.5;
+    resize: vertical;
+    min-height: 180px;
+    transition: all 0.2s;
+    box-sizing: border-box;
+}
+
+.form-textarea:focus {
+    outline: none;
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.form-textarea.invalid {
+    border-color: #f59e0b;
+    background-color: #fffbeb;
+}
+
+.form-select {
+    padding: 0.75rem 1rem;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    font-size: 1rem;
+    background: white;
+    cursor: pointer;
+    min-width: 150px;
+}
+
+.form-select:focus {
+    outline: none;
+    border-color: #3b82f6;
+}
+
+.form-row {
+    display: flex;
+    gap: 1rem;
+    align-items: flex-end;
+}
+
+.form-row .form-group.flex-1 {
+    flex: 1;
+}
+
+/* Stats Bar */
+.stats-bar {
+    display: flex;
+    gap: 1.5rem;
+    padding: 0.75rem 1rem;
+    background: #f8fafc;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    color: #64748b;
+    margin-top: 0.5rem;
+}
+
+.stats-bar .stat {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.stats-bar .stat strong {
+    color: #1e293b;
+}
+
+.stats-bar .stat.chars {
+    margin-left: auto;
+    font-size: 0.8rem;
+}
+
+/* Button Spinner */
+.btn-import-primary .spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-top-color: white;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin-right: 8px;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+.btn-import-primary {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+}
+
+/* Error Message */
+.manual-import-modal .error-message {
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    border-radius: 8px;
+    padding: 0.75rem 1rem;
+    margin-bottom: 1rem;
+    color: #dc2626;
+    font-size: 0.9rem;
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+    .manual-import-modal {
+        width: 95%;
+        max-height: 90vh;
+    }
+    
+    .form-row {
+        flex-direction: column;
+    }
+    
+    .form-select {
+        width: 100%;
+    }
+    
+    .stats-bar {
+        flex-wrap: wrap;
+        gap: 0.75rem;
+    }
+    
+    .stats-bar .stat.chars {
+        margin-left: 0;
+        width: 100%;
+    }
+}

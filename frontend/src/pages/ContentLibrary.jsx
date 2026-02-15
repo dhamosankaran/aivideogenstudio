@@ -1,13 +1,19 @@
 import { useState, useEffect } from 'react';
+import { useAppNavigate } from '../context/ProjectContext';
 import ArticleCard from '../components/ArticleCard';
 import FilterBar from '../components/FilterBar';
 import BulkActions from '../components/BulkActions';
 import ImportModal from '../components/ImportModal';
+import ManualImportModal from '../components/ManualImportModal';
 import { fetchArticles, generateScripts, deleteArticles } from '../services/contentApi';
 import { syncFeeds } from '../services/feedApi';
+import { useToast } from '../components/Toast';
+import { Rss, RefreshCw, Search, ClipboardPaste, Library } from 'lucide-react';
 import './ContentLibrary.css';
 
 export default function ContentLibrary() {
+    const { navigateTo } = useAppNavigate();
+    const toast = useToast();
     const [articles, setArticles] = useState([]);
     const [selected, setSelected] = useState([]);
     const [loading, setLoading] = useState(false);
@@ -15,6 +21,7 @@ export default function ContentLibrary() {
     const [error, setError] = useState(null);
     const [generating, setGenerating] = useState(false);
     const [showImportModal, setShowImportModal] = useState(false);
+    const [showManualModal, setShowManualModal] = useState(false);
 
     // Pagination state
     const [currentPage, setCurrentPage] = useState(1);
@@ -126,8 +133,15 @@ export default function ContentLibrary() {
 
             alert(message);
 
-            // Reload articles to update status
-            await loadArticles();
+            // If scripts were created, navigate to Script Review
+            if (result.scripts_created > 0) {
+                setTimeout(() => {
+                    navigateTo('scripts');
+                }, 500);
+            } else {
+                // Reload articles to update status
+                await loadArticles();
+            }
             setSelected([]);
         } catch (err) {
             alert(`Failed to generate scripts: ${err.message}`);
@@ -171,21 +185,30 @@ export default function ContentLibrary() {
                             disabled={syncing || loading}
                             className="btn-sync"
                         >
-                            {syncing ? '📡 Fetching...' : '📡 Fetch from RSS'}
+                            <Rss size={16} />
+                            {syncing ? 'Fetching...' : 'Fetch from RSS'}
                         </button>
                         <button
                             onClick={loadArticles}
                             disabled={loading || syncing}
                             className="btn-refresh"
                         >
-                            {loading ? '⟳ Refreshing...' : '⟳ Refresh View'}
+                            <RefreshCw size={16} className={loading ? 'icon-spin' : ''} />
+                            Refresh
                         </button>
                         <button
                             onClick={() => setShowImportModal(true)}
                             className="btn-import-trigger"
-                            style={{ marginLeft: '12px', backgroundColor: '#2563eb', color: 'white', border: 'none', padding: '8px 16px', borderRadius: '4px', cursor: 'pointer' }}
                         >
-                            🔍 Import from NewsAPI
+                            <Search size={16} />
+                            Import from NewsAPI
+                        </button>
+                        <button
+                            onClick={() => setShowManualModal(true)}
+                            className="btn-manual"
+                        >
+                            <ClipboardPaste size={16} />
+                            Paste Content
                         </button>
                     </div>
                 </div>
@@ -204,6 +227,12 @@ export default function ContentLibrary() {
                 onImportComplete={loadArticles}
             />
 
+            <ManualImportModal
+                isOpen={showManualModal}
+                onClose={() => setShowManualModal(false)}
+                onImportComplete={loadArticles}
+            />
+
             {error && (
                 <div className="error-message">
                     <strong>Error:</strong> {error}
@@ -217,8 +246,15 @@ export default function ContentLibrary() {
                 </div>
             ) : articles.length === 0 ? (
                 <div className="empty-state">
+                    <div className="empty-state-icon">
+                        <Library size={36} />
+                    </div>
                     <h3>No articles found</h3>
-                    <p>Try adjusting your filters or check back later for new content.</p>
+                    <p>Add your first RSS feed or import content to get started creating videos.</p>
+                    <button className="empty-state-cta" onClick={handleSyncFeeds} disabled={syncing}>
+                        <Rss size={16} />
+                        Fetch from RSS Feeds
+                    </button>
                 </div>
             ) : (
                 <>
@@ -272,16 +308,13 @@ export default function ContentLibrary() {
                     onGenerate={handleGenerateScripts}
                     onDelete={async () => {
                         if (window.confirm(`Are you sure you want to delete ${selected.length} articles?`)) {
-                            setLoading(true);
                             try {
                                 const result = await deleteArticles(selected);
                                 alert(`Deleted ${result.deleted} articles.`);
-                                await loadArticles();
-                                setSelected([]);
+                                setSelected([]); // Clear selection first
+                                await loadArticles(); // This handles loading state internally
                             } catch (err) {
                                 alert(`Failed to delete: ${err.message}`);
-                            } finally {
-                                setLoading(false);
                             }
                         }
                     }}

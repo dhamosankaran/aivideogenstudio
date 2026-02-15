@@ -1,10 +1,10 @@
 import { useState, useEffect } from 'react';
-import { useProject } from '../context/ProjectContext';
+import { useAppNavigate } from '../context/ProjectContext';
 import { fetchPendingScripts, fetchScriptDetail, updateScriptContent, approveScript, generateVideo, rejectScript, regenerateScript, deleteScript } from '../services/scriptApi';
 import './ScriptReview.css';
 
 export default function ScriptReview() {
-    const { navigateTo } = useProject();
+    const { navigateTo } = useAppNavigate();
     const [scripts, setScripts] = useState([]);
     const [selectedScriptId, setSelectedScriptId] = useState(null);
     const [scriptDetail, setScriptDetail] = useState(null);

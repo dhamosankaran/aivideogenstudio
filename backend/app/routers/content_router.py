@@ -5,12 +5,15 @@ Provides endpoints for browsing, filtering, and selecting articles for video gen
 """
 
 from typing import List, Optional
+from datetime import datetime, timezone
+import uuid
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from app.database import get_db
 from app.services.content_service import ContentService
+from app.models import Article
 
 
 router = APIRouter(prefix="/api/content", tags=["content"])
@@ -43,6 +46,24 @@ class GenerateScriptsRequest(BaseModel):
     """Request model for generating scripts."""
     article_ids: List[int]
     content_type: Optional[str] = "daily_update"
+
+
+class ManualImportRequest(BaseModel):
+    """Request model for manual content import."""
+    title: str
+    content: str
+    source_url: Optional[str] = None
+    content_type: Optional[str] = "daily_update"
+
+
+class ManualImportResponse(BaseModel):
+    """Response model for manual content import."""
+    id: int
+    title: str
+    word_count: int
+    estimated_duration: float
+    message: str
+    analyzed: bool = False
 
 
 @router.get("/articles")
@@ -89,8 +110,13 @@ async def list_articles(
     # Convert SQLAlchemy models to dicts
     items_dict = []
     for article in result["items"]:
-        # Get feed name
-        feed_name = article.feed.name if article.feed else "Unknown"
+        # Get feed name - detect manual imports by URL pattern
+        if article.url and article.url.startswith("manual://"):
+            feed_name = "Manual Import"
+        elif article.feed:
+            feed_name = article.feed.name
+        else:
+            feed_name = "Unknown"
         
         items_dict.append({
             "id": article.id,
@@ -265,3 +291,99 @@ async def get_content_types(db: Session = Depends(get_db)):
     service = ContentService(db)
     content_types = service.get_content_types()
     return {"content_types": content_types}
+
+
+@router.post("/articles/manual", response_model=ManualImportResponse)
+async def import_manual_content(
+    request: ManualImportRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Import manually pasted content as an article with auto-analysis.
+    
+    Request Body:
+    - title: Article title (required)
+    - content: Full article content (required)
+    - source_url: Optional source URL for reference
+    - content_type: Content type (default: "daily_update")
+    
+    Returns:
+    - id: Created article ID
+    - title: Article title
+    - word_count: Number of words in content
+    - estimated_duration: Estimated video duration in seconds
+    - message: Success message
+    - analyzed: Whether LLM analysis was performed
+    """
+    from app.services.content_analyzer import ContentAnalyzer
+    
+    # Validate input length
+    if len(request.title.strip()) < 10:
+        raise HTTPException(status_code=400, detail="Title must be at least 10 characters")
+    if len(request.content.strip()) < 100:
+        raise HTTPException(status_code=400, detail="Content must be at least 100 characters")
+    if len(request.content) > 15000:
+        raise HTTPException(status_code=400, detail="Content must be less than 15,000 characters")
+    
+    # Generate unique URL if not provided
+    url = request.source_url.strip() if request.source_url else f"manual://import/{uuid.uuid4().hex[:12]}"
+    
+    # Check for duplicate URL
+    existing = db.query(Article).filter(Article.url == url).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Content with this URL already exists")
+    
+    # Calculate word count and duration
+    word_count = len(request.content.split())
+    estimated_duration = word_count / 2.5  # ~150 words per minute = 2.5 words per second
+    
+    # Create description from content (first 300 chars)
+    description = request.content[:300] + "..." if len(request.content) > 300 else request.content
+    
+    # Create article
+    article = Article(
+        title=request.title.strip(),
+        content=request.content.strip(),
+        url=url,
+        description=description,
+        suggested_content_type=request.content_type,
+        published_at=datetime.now(timezone.utc),
+        is_processed=False,
+        is_selected=False
+    )
+    
+    db.add(article)
+    db.commit()
+    db.refresh(article)
+    
+    # Auto-analyze using LLM
+    analyzed = False
+    try:
+        analyzer = ContentAnalyzer(db)
+        scores = await analyzer.analyze_article(article)
+        
+        if scores:
+            article.relevance_score = scores.relevance_score
+            article.engagement_score = scores.engagement_score
+            article.recency_score = scores.recency_score
+            article.uniqueness_score = scores.uniqueness_score
+            article.category = scores.category
+            article.key_topics = scores.key_topics
+            article.why_interesting = scores.why_interesting
+            article.final_score = analyzer._calculate_final_score(scores)
+            article.analyzed_at = datetime.now(timezone.utc)
+            db.commit()
+            analyzed = True
+    except Exception as e:
+        # Log but don't fail - user can manually analyze later
+        import logging
+        logging.getLogger(__name__).warning(f"Auto-analysis failed for article {article.id}: {e}")
+    
+    return ManualImportResponse(
+        id=article.id,
+        title=article.title,
+        word_count=word_count,
+        estimated_duration=round(estimated_duration, 1),
+        message="Content imported successfully" + (" and analyzed" if analyzed else " (analysis pending)"),
+        analyzed=analyzed
+    )

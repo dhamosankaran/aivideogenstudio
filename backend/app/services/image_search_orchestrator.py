@@ -1,13 +1,15 @@
 """
 Image Search Orchestrator - Multi-source image search with fallback chain.
 
-Priority order:
-1. Unsplash (free, high quality)
-2. Pexels (fallback)
-3. Gradient background (final fallback)
+Priority order (optimized for topic-relevant images):
+1. Serper (Google Images - best for news/tech topics)
+2. Unsplash (high quality stock photos)
+3. Pexels (fallback stock photos)
+4. Gradient background (final fallback)
 """
 
 import logging
+import asyncio
 from pathlib import Path
 from typing import List, Optional
 import hashlib
@@ -21,86 +23,202 @@ class ImageSearchOrchestrator:
     
     Usage:
         orchestrator = ImageSearchOrchestrator()
-        image_path = orchestrator.search_image(["Elon Musk", "SpaceX"])
+        image_path = orchestrator.search_image(["Waymo", "self-driving car"])
+        
+        # Async version (preferred):
+        image_path = await orchestrator.search_image_async(["Waymo", "self-driving"])
     """
     
     CACHE_DIR = Path("data/images")
+    
+    # Content-type subdirectories for organized asset management
+    CONTENT_TYPE_DIRS = {
+        "book_review": "book_reviews",
+        "daily_update": "daily_news",
+        "big_tech": "tech_news",
+        "youtube_import": "youtube",
+        "leader_quote": "quotes",
+        "arxiv_paper": "research",
+    }
     
     def __init__(self):
         """Initialize with available image providers."""
         self.CACHE_DIR.mkdir(parents=True, exist_ok=True)
         
         # Initialize providers (gracefully handle missing API keys)
+        self.serper = None
         self.unsplash = None
         self.pexels = None
         
+        # Try Serper first (best for topic-relevant images)
+        try:
+            from app.services.serper_image_service import SerperImageService
+            serper = SerperImageService()
+            if serper.is_available:
+                self.serper = serper
+                logger.info("✓ Serper service initialized (primary)")
+            else:
+                logger.warning("Serper API key not configured (SERPER_API_KEY)")
+        except Exception as e:
+            logger.warning(f"Could not initialize Serper: {e}")
+        
+        # Unsplash for high-quality stock photos
         try:
             from app.services.unsplash_service import UnsplashService
             unsplash = UnsplashService()
             if unsplash.access_key:
                 self.unsplash = unsplash
-                logger.info("✓ Unsplash service initialized")
+                logger.info("✓ Unsplash service initialized (fallback 1)")
             else:
                 logger.warning("Unsplash API key not configured")
         except Exception as e:
             logger.warning(f"Could not initialize Unsplash: {e}")
             
+        # Pexels as final stock photo fallback
         try:
             from app.services.pexels_service import PexelsService
             self.pexels = PexelsService()
-            logger.info("✓ Pexels service initialized (fallback)")
+            logger.info("✓ Pexels service initialized (fallback 2)")
         except ValueError as e:
             logger.warning(f"Could not initialize Pexels: {e}")
         except Exception as e:
             logger.warning(f"Could not initialize Pexels: {e}")
     
-    def search_image(
+    async def search_image_async(
         self,
         keywords: List[str],
+        topic_query: Optional[str] = None,
         orientation: str = "portrait",
-        size: str = "regular"
+        size: str = "regular",
+        content_type: str = ""
     ) -> Optional[Path]:
         """
-        Search for an image across all providers.
+        Async search for an image across all providers.
         
         Args:
-            keywords: List of search keywords
+            keywords: List of search keywords (for stock photos)
+            topic_query: Specific topic query (for Serper - uses article title if set)
             orientation: Image orientation (portrait, landscape)
-            size: Image size (for Unsplash: raw, full, regular, small, thumb)
+            size: Image size
             
         Returns:
             Path to downloaded image, or None if not found
         """
-        if not keywords:
+        if not keywords and not topic_query:
             return None
-            
-        # Create cache key from keywords
-        cache_key = self._get_cache_key(keywords)
-        cached_path = self.CACHE_DIR / f"{cache_key}.jpg"
+        
+        # Use topic_query for Serper, keywords for stock photos
+        serper_query = topic_query or " ".join(keywords[:4])
+        stock_query = " ".join(keywords[:3])
+        
+        # Create cache key
+        cache_key = self._get_cache_key(keywords + ([topic_query] if topic_query else []))
+        
+        # Use content-type subfolder if specified
+        if content_type and content_type in self.CONTENT_TYPE_DIRS:
+            cache_dir = self.CACHE_DIR / self.CONTENT_TYPE_DIRS[content_type]
+            cache_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            cache_dir = self.CACHE_DIR
+        
+        cached_path = cache_dir / f"{cache_key}.jpg"
         
         # Check cache first
         if cached_path.exists():
             logger.info(f"Using cached image: {cached_path}")
             return cached_path
         
-        query = " ".join(keywords[:3])  # Use first 3 keywords
-        
-        # Try Unsplash first (primary)
-        if self.unsplash:
-            logger.info(f"[Unsplash] Searching: {query}")
-            result = self._search_unsplash(query, orientation, size, cached_path)
+        # Try Serper first (best for topic-specific images)
+        if self.serper:
+            logger.info(f"[Serper] Searching: {serper_query[:50]}...")
+            result = await self._search_serper_async(serper_query, cached_path)
             if result:
                 return result
         
-        # Try Pexels as fallback
+        # Try Unsplash
+        if self.unsplash:
+            logger.info(f"[Unsplash] Fallback: {stock_query}")
+            result = self._search_unsplash(stock_query, orientation, size, cached_path)
+            if result:
+                return result
+        
+        # Try Pexels as final fallback
         if self.pexels:
-            logger.info(f"[Pexels] Fallback searching: {query}")
+            logger.info(f"[Pexels] Fallback: {stock_query}")
             result = self._search_pexels(keywords, orientation, cached_path)
             if result:
                 return result
         
-        logger.warning(f"No images found for: {query}")
+        logger.warning(f"No images found for: {serper_query}")
         return None
+    
+    def search_image(
+        self,
+        keywords: List[str],
+        topic_query: Optional[str] = None,
+        orientation: str = "portrait",
+        size: str = "regular",
+        content_type: str = ""
+    ) -> Optional[Path]:
+        """
+        Sync wrapper for search_image_async.
+        """
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # If already in async context, use run_coroutine_threadsafe
+                import concurrent.futures
+                future = asyncio.ensure_future(
+                    self.search_image_async(keywords, topic_query, orientation, size, content_type)
+                )
+                # This is a workaround for sync code calling async
+                # In production, prefer using search_image_async directly
+                return asyncio.get_event_loop().run_until_complete(future)
+            else:
+                return loop.run_until_complete(
+                    self.search_image_async(keywords, topic_query, orientation, size, content_type)
+                )
+        except RuntimeError:
+            # No event loop - create one
+            return asyncio.run(
+                self.search_image_async(keywords, topic_query, orientation, size, content_type)
+            )
+    
+    async def _search_serper_async(
+        self, 
+        query: str, 
+        output_path: Path
+    ) -> Optional[Path]:
+        """Search Serper and download image."""
+        try:
+            # Append negative keywords for book-related searches to filter noise
+            search_query = query
+            query_lower = query.lower()
+            if any(term in query_lower for term in ["book", "author", "reading", "habit"]):
+                search_query = f"{query} -amazon -kindle -ebay -audible -religious"
+                logger.info(f"[Serper] Book-aware query with negative keywords")
+            
+            images = await self.serper.search_images(search_query, num_results=5)
+            
+            if not images:
+                logger.info(f"[Serper] No results for: {query[:50]}")
+                return None
+            
+            # Try to download the first available image
+            for image in images:
+                path = await self.serper.download_image(image, self.CACHE_DIR)
+                if path and path.exists():
+                    # Copy to our cache location with consistent naming
+                    import shutil
+                    shutil.copy(path, output_path)
+                    logger.info(f"[Serper] Downloaded: {output_path}")
+                    return output_path
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"[Serper] Error: {e}")
+            return None
     
     def _search_unsplash(
         self, 
@@ -178,6 +296,7 @@ class ImageSearchOrchestrator:
     def get_provider_status(self) -> dict:
         """Get status of all providers."""
         return {
+            "serper": bool(self.serper),
             "unsplash": bool(self.unsplash),
             "pexels": bool(self.pexels),
             "fallback": "gradient"

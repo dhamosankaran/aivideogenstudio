@@ -41,3 +41,11 @@ build/
 .idea/
 .vscode/
 *.swp
+
+# Data and Outputs
+backend/data/
+backend/outputs/
+backend/temp/
+backend/cache/
+frontend/dist/
+frontend/.vite/

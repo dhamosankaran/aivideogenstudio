@@ -10,7 +10,7 @@ Handles:
 import re
 import logging
 from typing import Optional, List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
@@ -292,7 +292,7 @@ class YouTubeTranscriptService:
             # Store insights in database
             source.insights = [i.to_dict() for i in insights]
             source.analysis_status = "completed"
-            source.analyzed_at = datetime.utcnow()
+            source.analyzed_at = datetime.now(timezone.utc)
             self.db.commit()
             
             logger.info(f"Analysis complete: {len(insights)} insights found for source {youtube_source_id}")
@@ -358,7 +358,7 @@ class YouTubeTranscriptService:
             
             # Store in database
             source.video_summary = summary
-            source.summary_generated_at = datetime.utcnow()
+            source.summary_generated_at = datetime.now(timezone.utc)
             self.db.commit()
             
             logger.info(f"Video summary generated for source {youtube_source_id}: {len(summary)} chars")
@@ -375,11 +375,10 @@ class YouTubeTranscriptService:
         channel_name: str,
         duration_seconds: float
     ) -> str:
-        """Build the LLM prompt for video summary generation."""
-        return f'''Create a comprehensive summary of this YouTube video.
+        """Build the LLM prompt for video summary generation - focuses on CONTENT not the video itself."""
+        return f'''Summarize the CONTENT AND INSIGHTS from this YouTube video transcript.
 
 VIDEO TITLE: {video_title}
-CHANNEL: {channel_name}
 DURATION: {duration_seconds / 60:.1f} minutes
 
 TRANSCRIPT:
@@ -387,19 +386,32 @@ TRANSCRIPT:
 
 ---
 
-Please provide a well-structured summary with:
+Create a summary that focuses on WHAT IS BEING DISCUSSED, not the video itself.
 
-1. **Overview** (2-3 sentences): What is this video about? Who is the speaker/creator?
+**FORMAT:**
 
-2. **Key Takeaways** (3-5 bullet points): The most important insights, facts, or lessons from the video.
+## YouTube Video Summary: {video_title}
 
-3. **Notable Quotes** (1-2): Any memorable or quotable statements.
+### 1. Overview
+[2-3 sentences describing WHAT THE TOPIC/PRODUCT IS and why it matters. 
+DO NOT say "this video" or "the speaker". Focus on the subject matter itself.
+Example: "OpenAI Codex is a new AI coding assistant that..." NOT "This video covers OpenAI Codex..."]
 
-4. **Content Style**: Is this educational, entertainment, opinion, news, tutorial, etc.?
+### 2. Key Takeaways
+[3-5 bullet points of the most important features, facts, or insights.
+Start each point with the actual topic/product, not "the video shows..."]
 
-5. **Target Audience**: Who would benefit most from watching this video?
+* **Feature/Insight Name:** What it does and why it matters
+* **Feature/Insight Name:** What it does and why it matters
 
-Keep the summary concise but informative (under 500 words). Use markdown formatting.'''
+### 3. Why This Matters
+[1-2 sentences on the significance or impact of this topic for the audience]
+
+CRITICAL RULES:
+- Write as if summarizing THE PRODUCT OR TOPIC, not "a video about the product"
+- NEVER use phrases like "this video", "the speaker explains", "the creator shows"
+- ALWAYS focus on the actual content: features, capabilities, facts, insights
+- Keep it under 400 words'''
 
 
     
@@ -578,7 +590,7 @@ SOURCE: {source.title or 'YouTube Video'} (Credit in description)"""
             engagement_score=insight['viral_score'],
             final_score=insight['viral_score'],
             is_processed=True,
-            analyzed_at=datetime.utcnow()
+            analyzed_at=datetime.now(timezone.utc)
         )
         
         self.db.add(article)

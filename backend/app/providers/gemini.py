@@ -46,22 +46,78 @@ class GeminiProvider(BaseLLMProvider):
         Returns:
             Generated text
         """
+        # Default safety settings to BLOCK_NONE to avoid technical/unintended blocks
+        # Use proper types from google.generativeai.types
+        from google.generativeai.types import HarmCategory, HarmBlockThreshold
+        
+        safety_settings = [
+            {
+                "category": HarmCategory.HARM_CATEGORY_HARASSMENT,
+                "threshold": HarmBlockThreshold.BLOCK_NONE,
+            },
+            {
+                "category": HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                "threshold": HarmBlockThreshold.BLOCK_NONE,
+            },
+            {
+                "category": HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                "threshold": HarmBlockThreshold.BLOCK_NONE,
+            },
+            {
+                "category": HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                "threshold": HarmBlockThreshold.BLOCK_NONE,
+            },
+        ]
+        
+        # Build generation config
         generation_config = {
             "temperature": temperature,
         }
-        
         if max_tokens:
             generation_config["max_output_tokens"] = max_tokens
         
-        # Add any extra kwargs to config
-        generation_config.update(kwargs)
+        # Handle JSON mode with schema
+        if "response_mime_type" in kwargs:
+            generation_config["response_mime_type"] = kwargs["response_mime_type"]
+        if "response_schema" in kwargs:
+            generation_config["response_schema"] = kwargs["response_schema"]
         
-        response = await self.client.generate_content_async(
-            prompt,
-            generation_config=generation_config
-        )
-        
-        return response.text
+        try:
+            response = await self.client.generate_content_async(
+                prompt,
+                generation_config=generation_config,
+                safety_settings=safety_settings
+            )
+            
+            import logging
+            logger = logging.getLogger(__name__)
+            
+            # Log finish reason for debugging
+            if response.candidates:
+                finish_reason = response.candidates[0].finish_reason
+                logger.debug(f"Gemini finish_reason: {finish_reason}")
+                
+                # Check for safety blocks - but try to get text anyway
+                if finish_reason == 2:  # SAFETY
+                    logger.warning(f"Gemini response had SAFETY finish_reason. Prompt excerpt: {prompt[:100]}...")
+                    # Try to get text anyway
+                    try:
+                        return response.text
+                    except Exception as text_error:
+                        logger.warning(f"Could not get text from blocked response: {text_error}")
+                        # Return a placeholder that will fail JSON parsing gracefully
+                        return "Error: Content blocked by safety filters. Please try a different insight or prompt."
+                
+            return response.text
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            # If it's the specific response.text error due to safety
+            if "response.text" in str(e) or "finish_reason" in str(e) or "blocked" in str(e).lower():
+                logger.warning(f"Gemini response error (likely safety): {str(e)}")
+                return "Error: Content could not be generated due to safety filters."
+            raise e
+
     
     async def analyze_video(
         self,

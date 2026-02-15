@@ -7,7 +7,7 @@ Provides article listing, filtering, analysis, and ranking.
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import uuid
 
 from app.database import get_db
@@ -48,7 +48,7 @@ async def list_articles(
         query = query.filter(Article.is_selected == selected)
     
     if days:
-        since = datetime.utcnow() - timedelta(days=days)
+        since = datetime.now(timezone.utc) - timedelta(days=days)
         query = query.filter(Article.created_at >= since)
     
     # Order by creation date (newest first)
@@ -135,7 +135,7 @@ async def analyze_articles(
         job_id=job_id,
         status="pending",
         message=f"Article analysis started",
-        created_at=datetime.utcnow()
+        created_at=datetime.now(timezone.utc)
     )
 
 

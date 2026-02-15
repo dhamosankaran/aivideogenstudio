@@ -2,6 +2,13 @@
 Pydantic schemas for request/response models.
 
 Separates API contracts from database models.
+
+Submodules:
+- schemas.script: Script generation request/response
+- schemas.audio: Audio generation request/response
+- schemas.video: Video rendering request/response
+- schemas.youtube_schemas: YouTube transcript analysis
+- schemas.script_generation: Structured script output (scene-based)
 """
 
 from datetime import datetime
@@ -46,7 +53,7 @@ class FeedResponse(FeedBase):
 class ArticleBase(BaseModel):
     """Base article fields."""
     title: str
-    url: HttpUrl
+    url: str  # Accept any URL (including manual://, book://, etc.)
     author: Optional[str] = None
     published_at: Optional[datetime] = None
     description: Optional[str] = None
@@ -67,7 +74,9 @@ class ArticleScores(BaseModel):
 class ArticleResponse(ArticleBase):
     """Schema for article response."""
     id: int
-    feed_id: int
+    feed_id: Optional[int] = None  # Optional for manual/book sources
+    youtube_source_id: Optional[int] = None
+    book_source_id: Optional[int] = None
     
     # AI analysis
     summary: Optional[str] = None

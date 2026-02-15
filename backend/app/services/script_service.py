@@ -8,15 +8,38 @@ import re
 import logging
 from typing import Optional, List, Dict
 from sqlalchemy.orm import Session
-from datetime import datetime
+from datetime import datetime, timezone
 from app.database import SessionLocal
 
 from app.models import Article, Script
 from app.services.base_provider import BaseLLMProvider
 from app.services.provider_factory import ProviderFactory, LLMProvider
 from app.prompts import build_script_generation_prompt
+from app.services.content_extractor import extract_article_content
 
 logger = logging.getLogger(__name__)
+
+# Phonetic corrections for TTS pronunciation of common author/book names
+# Format: { "misspelling_or_hard_word": "phonetic_friendly_version" }
+PHONETIC_MAP = {
+    # Author names commonly mispronounced by TTS
+    "Covey": "Coh-vee",
+    "Kahneman": "Kahn-uh-man",
+    "Cialdini": "Chahl-dee-nee",
+    "Csikszentmihalyi": "Cheek-sent-mee-hi",
+    "Nassim Taleb": "Nah-seem Tah-leb",
+    "Yuval Harari": "You-vahl Hah-rah-ree",
+    "Duhigg": "Doo-hig",
+    "Thaler": "Tay-ler",
+    "Gladwell": "Glad-well",
+    "Goleman": "Goal-man",
+    "Brené Brown": "Breh-nay Brown",
+    "Brene Brown": "Breh-nay Brown",
+    # Book title terms
+    "Ikigai": "Ee-kee-guy",
+    "Sapiens": "Say-pee-ens",
+    "Antifragile": "Anti-frah-jile",
+}
 
 
 class ValidationResult:
@@ -32,11 +55,12 @@ class ScriptService:
     # Words per second for duration estimation (average speaking rate)
     WORDS_PER_SECOND = 2.5
     
-    # Length targets (optimized for YouTube Shorts algorithm: 45-60s)
-    MIN_WORDS = 180
-    MAX_WORDS = 250
-    MIN_DURATION = 45  # seconds
-    MAX_DURATION = 60  # seconds
+    # Length targets (optimized for viral YouTube Shorts: 20-30s)
+    # Shorter = more rewatchable = better algorithm performance
+    MIN_WORDS = 50
+    MAX_WORDS = 80
+    MIN_DURATION = 18  # seconds
+    MAX_DURATION = 32  # seconds (including end screen)
     
     def __init__(
         self,
@@ -59,7 +83,7 @@ class ScriptService:
         self,
         article: Article,
         style: str = "engaging",
-        target_duration: int = 50  # Optimized for Shorts (45-60s)
+        target_duration: int = 25  # Optimized for viral Shorts (20-30s)
     ) -> Script:
         """
         Generate a video script from an article.
@@ -77,25 +101,48 @@ class ScriptService:
         logger.info(f"Generating scene-based script for article {article.id} in {style} style")
         
         try:
-            # Build scene-based prompt
+            # Extract full article content from URL (Phase 1: Web Crawling)
+            article_content = article.content or article.description or ""
+            if article.url:
+                full_content, was_extracted = extract_article_content(
+                    url=article.url,
+                    fallback_content=article_content
+                )
+                if was_extracted:
+                    logger.info(f"Using extracted content ({len(full_content)} chars) for article {article.id}")
+                    article_content = full_content
+                else:
+                    logger.info(f"Using RSS content ({len(article_content)} chars) for article {article.id}")
+            
+            # Detect content type for specialized prompts
+            content_type = getattr(article, 'suggested_content_type', '') or ''
+            is_book_review = content_type == 'book_review'
+            
+            # Override target duration for book reviews (85s for 7-8 scene structure)
+            if is_book_review:
+                target_duration = 85
+                logger.info(f"Book review V2 detected – using 85s target with 7-8 scene structure")
+            
+            # Build scene-based prompt with full article content for factual accuracy
             prompt = build_script_generation_prompt(
                 article_title=article.title,
                 article_summary=article.summary or article.description or "",
                 key_points=article.key_points or [],
                 style=style,
                 target_duration=target_duration,
-                scene_based=True
+                scene_based=True,
+                article_content=article_content,
+                category=content_type
             )
             
-            # Use Gemini's native JSON mode if available (provider check is implicit via kwargs support)
-            # We pass the schema to the provider which supports 'response_schema' in generation_config
+            # Use Gemini's native JSON mode for structured output
+            # NOTE: Not using response_schema as it can cause malformed output with repetitive patterns
+            # Use low temperature (0.3) for factual accuracy - news should stick to source content
             response_text = await self.llm.generate_text(
                 prompt=prompt,
-                temperature=0.7,
+                temperature=0.3,
                 max_tokens=8000,
-                # Gemini-specific: enforce JSON response matching the schema
-                response_mime_type="application/json",
-                response_schema=ScriptOutput
+                response_mime_type="application/json"
             )
             
             # Validate with Pydantic (robust parsing)
@@ -132,17 +179,22 @@ class ScriptService:
             raw_script += f"[CTA]\n{script_data.call_to_action}\n"
             
             # Format for TTS (just the narration text)
-            formatted_parts = [script_data.hook]
-            formatted_parts.extend([s.text for s in script_data.scenes])
-            formatted_parts.append(script_data.call_to_action)
+            # Note: Scenes already contain hook and CTA, so we only use scenes
+            # to avoid duplication (Scene 1 = hook, Scene N = CTA)
+            formatted_parts = [s.text for s in script_data.scenes]
             formatted_script = " ".join(formatted_parts)
+            
+            # Apply phonetic fixes for book reviews (prevents TTS mispronunciations)
+            if is_book_review:
+                formatted_script = self._apply_phonetic_fixes(formatted_script)
+                logger.info("Applied phonetic fixes for book review TTS")
             
             # Calculate metadata
             word_count = self._count_words(formatted_script)
             estimated_duration = self.estimate_duration(formatted_script)
             
             # Validate
-            validation = self.validate_script(formatted_script)
+            validation = self.validate_script(formatted_script, content_type=content_type)
             
             # Calculate cost
             generation_cost = self.llm.estimate_cost(
@@ -165,7 +217,13 @@ class ScriptService:
                 style=style,
                 has_hook=bool(script_data.hook),
                 has_cta=bool(script_data.call_to_action),
-                catchy_title=script_data.title_suggestion,
+                # Handle safety filter errors in title - fallback to article title
+                catchy_title=(
+                    script_data.title_suggestion 
+                    if script_data.title_suggestion and not script_data.title_suggestion.startswith("Error:")
+                    else (article.title[:100] if article.title else "Untitled Script")
+                ),
+                content_type=content_type,  # Store content type for video end screen selection
                 status="generated",
                 generation_cost=generation_cost
             )
@@ -245,9 +303,8 @@ class ScriptService:
             ]
             
             # Build formatted script for TTS
-            formatted_parts = [script_data.hook]
-            formatted_parts.extend([s.text for s in script_data.scenes])
-            formatted_parts.append(script_data.call_to_action)
+            # Note: Scenes already contain hook and CTA, so we only use scenes
+            formatted_parts = [s.text for s in script_data.scenes]
             formatted_script = " ".join(formatted_parts)
             
             word_count = self._count_words(formatted_script)
@@ -348,31 +405,39 @@ Return JSON with this structure:
 
 
     
-    def validate_script(self, script: str) -> ValidationResult:
+    def validate_script(self, script: str, content_type: str = "") -> ValidationResult:
         """
         Validate a script against quality criteria.
         
         Args:
             script: Script text to validate
+            content_type: Content type for type-specific thresholds
             
         Returns:
             ValidationResult with errors if invalid
         """
         errors = []
         
+        # Content-type-specific thresholds
+        is_book_review = content_type == "book_review"
+        min_words = 180 if is_book_review else self.MIN_WORDS
+        max_words = 240 if is_book_review else self.MAX_WORDS
+        min_duration = 70 if is_book_review else self.MIN_DURATION
+        max_duration = 95 if is_book_review else self.MAX_DURATION
+        
         # Check word count
         word_count = self._count_words(script)
-        if word_count < self.MIN_WORDS:
-            errors.append(f"Script too short: {word_count} words (min {self.MIN_WORDS})")
-        elif word_count > self.MAX_WORDS:
-            errors.append(f"Script too long: {word_count} words (max {self.MAX_WORDS})")
+        if word_count < min_words:
+            errors.append(f"Script too short: {word_count} words (min {min_words})")
+        elif word_count > max_words:
+            errors.append(f"Script too long: {word_count} words (max {max_words})")
         
         # Check duration
         duration = self.estimate_duration(script)
-        if duration < self.MIN_DURATION:
-            errors.append(f"Duration too short: {duration:.1f}s (min {self.MIN_DURATION}s)")
-        elif duration > self.MAX_DURATION:
-            errors.append(f"Duration too long: {duration:.1f}s (max {self.MAX_DURATION}s)")
+        if duration < min_duration:
+            errors.append(f"Duration too short: {duration:.1f}s (min {min_duration}s)")
+        elif duration > max_duration:
+            errors.append(f"Duration too long: {duration:.1f}s (max {max_duration}s)")
         
         # Check structure
         required_sections = ["[HOOK]", "[CONTEXT]", "[MAIN POINTS]", "[WRAP-UP]", "[CTA]"]
@@ -444,6 +509,28 @@ Return JSON with this structure:
         clean_text = re.sub(r'\[.*?\]', '', text)
         return len(clean_text.split())
     
+    def _apply_phonetic_fixes(self, text: str) -> str:
+        """
+        Apply phonetic corrections for TTS pronunciation.
+        
+        Replaces difficult-to-pronounce author names and book terms
+        with phonetic-friendly versions that TTS engines handle better.
+        
+        Args:
+            text: Script text to fix
+            
+        Returns:
+            Text with phonetic corrections applied
+        """
+        fixed_text = text
+        for original, phonetic in PHONETIC_MAP.items():
+            # Case-insensitive whole-word replacement
+            pattern = re.compile(re.escape(original), re.IGNORECASE)
+            if pattern.search(fixed_text):
+                fixed_text = pattern.sub(phonetic, fixed_text)
+                logger.info(f"[Phonetic] Replaced '{original}' → '{phonetic}'")
+        return fixed_text
+    
     def get_script(self, script_id: int) -> Optional[Script]:
         """Get script by ID."""
         return self.db.query(Script).filter(Script.id == script_id).first()
@@ -458,16 +545,12 @@ Return JSON with this structure:
             if hasattr(script, key):
                 setattr(script, key, value)
         
-        script.updated_at = datetime.utcnow()
+        script.updated_at = datetime.now(timezone.utc)
         
         self.db.commit()
         self.db.refresh(script)
         
         return script
-    
-    def approve_script(self, script_id: int) -> Optional[Script]:
-        """Approve a script for video generation."""
-        return self.update_script(script_id, status="approved")
     
     def reject_script(self, script_id: int, reason: str = None) -> Optional[Script]:
         """Reject a script."""
@@ -509,28 +592,33 @@ Return JSON with this structure:
         if article:
             try:
                 # Use LLM to generate catchy YouTube title
-                prompt = f"""Generate a catchy, click-worthy YouTube title for this article.
-                
-Article Title: {article.title}
-Article Summary: {article.description or article.summary or ''}
+                # Note: Use neutral language to avoid safety filter triggers
+                prompt = f"""Create an engaging YouTube Shorts title for this content.
 
-Requirements:
-- Maximum 60 characters
-- Engaging and attention-grabbing
-- Include numbers or power words if relevant
-- Optimized for YouTube algorithm
+Topic: {article.title}
+Brief: {(article.description or article.summary or '')[:200]}
 
-Return ONLY the title, nothing else."""
+Guidelines:
+- Keep it under 60 characters
+- Make it compelling and relevant
+- Use action words or curiosity triggers
+- Avoid sensationalist or aggressive language
+
+Respond with ONLY the title text, no quotes or extra formatting."""
 
                 catchy_title = await self.llm.generate_text(
                     prompt=prompt,
-                    temperature=0.8,
+                    temperature=0.7,
                     max_tokens=50
                 )
                 catchy_title = catchy_title.strip().strip('"').strip("'")
+                
+                # Fallback if response is empty or looks like an error
+                if not catchy_title or len(catchy_title) < 5 or catchy_title.startswith("Error"):
+                    catchy_title = article.title[:100]
             except Exception as e:
                 logger.warning(f"Failed to generate catchy title: {str(e)}")
-                catchy_title = article.title[:60]  # Fallback to truncated original title
+                catchy_title = article.title[:100]  # Fallback to truncated original title
         
         # Parse scenes from raw_script if scenes field is null
         scene_count = 0
@@ -593,7 +681,7 @@ Return ONLY the title, nothing else."""
         if hashtags is not None:
             script.hashtags = hashtags
         
-        script.updated_at = datetime.utcnow()
+        script.updated_at = datetime.now(timezone.utc)
         
         self.db.commit()
         self.db.refresh(script)
@@ -615,7 +703,7 @@ Return ONLY the title, nothing else."""
         
         # Update script status
         script.script_status = "approved"
-        script.reviewed_at = datetime.utcnow()
+        script.reviewed_at = datetime.now(timezone.utc)
         script.status = "approved"
         
         self.db.commit()
@@ -645,7 +733,7 @@ Return ONLY the title, nothing else."""
             audio_service = AudioService(self.db)
             audio = await audio_service.generate_audio_from_script(
                 script_id=script_id,
-                tts_provider="google"
+                tts_provider="openai"  # Use OpenAI TTS (more reliable)
             )
 
             # 2. Create Video Task

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useProject } from '../context/ProjectContext';
+import { useAppNavigate } from '../context/ProjectContext';
 import {
     analyzeYouTubeVideo,
     getYouTubeSources,
@@ -7,12 +7,13 @@ import {
     createShortFromInsight,
     getVideoSummary,
     generateModeA,
-    generateModeB
+    generateModeB,
+    trimAndGenerate
 } from '../services/youtubeApi';
 import './YouTubeImport.css';
 
 function YouTubeImport() {
-    const { navigateTo } = useProject();
+    const { navigateTo } = useAppNavigate();
 
     // State
     const [youtubeUrl, setYoutubeUrl] = useState('');
@@ -29,6 +30,7 @@ function YouTubeImport() {
     const [videoSummary, setVideoSummary] = useState(null);
     const [isLoadingSummary, setIsLoadingSummary] = useState(false);
     const [generatingInsight, setGeneratingInsight] = useState(null); // {index, mode}
+    const [trimTimes, setTrimTimes] = useState({}); // { [insightIndex]: { start, end, expanded } }
     const [generationProgress, setGenerationProgress] = useState({});
 
     // Load existing sources on mount
@@ -211,6 +213,24 @@ function YouTubeImport() {
         } finally {
             setGeneratingInsight(null);
         }
+    };
+
+    const handleDownloadSummary = () => {
+        if (!videoSummary) return;
+
+        const title = videoSummary.title || 'Video Summary';
+        const channel = videoSummary.channel_name ? `by ${videoSummary.channel_name}` : '';
+        const content = `# ${title}\n${channel}\n\n${videoSummary.video_summary}`;
+
+        const blob = new Blob([content], { type: 'text/markdown' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${title.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 50)}_summary.md`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
     };
 
     const handleCreateBulkShorts = async (mode) => {
@@ -466,7 +486,90 @@ function YouTubeImport() {
                                                             >
                                                                 ✍️ Write Original
                                                             </button>
+                                                            <button
+                                                                className="mode-btn trim-btn"
+                                                                onClick={() => setTrimTimes(prev => ({
+                                                                    ...prev,
+                                                                    [index]: {
+                                                                        start: prev[index]?.start ?? Math.floor(insight.start_time),
+                                                                        end: prev[index]?.end ?? Math.floor(insight.end_time || insight.start_time + (insight.duration || 30)),
+                                                                        expanded: !prev[index]?.expanded
+                                                                    }
+                                                                }))}
+                                                                disabled={generatingInsight !== null}
+                                                                title="Trim to custom times and generate video"
+                                                            >
+                                                                ✂️ Trim & Create
+                                                            </button>
                                                         </>
+                                                    )}
+
+                                                    {/* Trim Controls (expandable) */}
+                                                    {trimTimes[index]?.expanded && (
+                                                        <div className="trim-controls">
+                                                            <div className="trim-inputs">
+                                                                <label>
+                                                                    Start (s):
+                                                                    <input
+                                                                        type="number"
+                                                                        className="trim-time-input"
+                                                                        value={trimTimes[index]?.start ?? ''}
+                                                                        onChange={(e) => setTrimTimes(prev => ({
+                                                                            ...prev,
+                                                                            [index]: { ...prev[index], start: parseFloat(e.target.value) || 0 }
+                                                                        }))}
+                                                                        min={0}
+                                                                        step={1}
+                                                                    />
+                                                                </label>
+                                                                <label>
+                                                                    End (s):
+                                                                    <input
+                                                                        type="number"
+                                                                        className="trim-time-input"
+                                                                        value={trimTimes[index]?.end ?? ''}
+                                                                        onChange={(e) => setTrimTimes(prev => ({
+                                                                            ...prev,
+                                                                            [index]: { ...prev[index], end: parseFloat(e.target.value) || 0 }
+                                                                        }))}
+                                                                        min={0}
+                                                                        step={1}
+                                                                    />
+                                                                </label>
+                                                                <span className="trim-duration">
+                                                                    Duration: {((trimTimes[index]?.end || 0) - (trimTimes[index]?.start || 0)).toFixed(0)}s
+                                                                </span>
+                                                            </div>
+                                                            <button
+                                                                className="trim-generate-btn"
+                                                                onClick={async () => {
+                                                                    const t = trimTimes[index];
+                                                                    if (!t || t.start >= t.end) {
+                                                                        setError('Start time must be less than end time');
+                                                                        return;
+                                                                    }
+                                                                    try {
+                                                                        setGeneratingInsight({ index, mode: 'trim' });
+                                                                        setGenerationProgress(prev => ({ ...prev, [index]: 'Trimming & generating...' }));
+                                                                        const result = await trimAndGenerate(
+                                                                            selectedSource.id, index, t.start, t.end
+                                                                        );
+                                                                        setGenerationProgress(prev => ({ ...prev, [index]: result.message }));
+                                                                        setSuccess(result.message);
+                                                                        if (result.redirect_to) {
+                                                                            setTimeout(() => navigateTo(result.redirect_to), 2000);
+                                                                        }
+                                                                    } catch (err) {
+                                                                        setError(err.message);
+                                                                    } finally {
+                                                                        setGeneratingInsight(null);
+                                                                    }
+                                                                }}
+                                                                disabled={generatingInsight !== null}
+                                                            >
+                                                                🚀 Generate Trimmed Video
+                                                            </button>
+                                                        </div>
                                                     )}
                                                 </div>
                                             </div>
@@ -508,7 +611,14 @@ function YouTubeImport() {
                     <div className="summary-modal" onClick={(e) => e.stopPropagation()}>
                         <div className="modal-header">
                             <h2>📋 Video Summary</h2>
-                            <button className="modal-close" onClick={() => setShowSummaryModal(false)}>×</button>
+                            <div className="modal-header-actions">
+                                {videoSummary && (
+                                    <button className="download-summary-btn" onClick={handleDownloadSummary} title="Download summary as markdown">
+                                        ⬇️ Download
+                                    </button>
+                                )}
+                                <button className="modal-close" onClick={() => setShowSummaryModal(false)}>×</button>
+                            </div>
                         </div>
                         <div className="modal-content">
                             {isLoadingSummary ? (

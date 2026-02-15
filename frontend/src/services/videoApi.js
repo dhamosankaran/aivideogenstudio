@@ -37,14 +37,15 @@ export async function fetchVideoDetail(videoId) {
  * Update video metadata
  */
 export async function updateVideoMetadata(videoId, metadata) {
-    const params = new URLSearchParams();
-
-    if (metadata.youtube_title) params.append('youtube_title', metadata.youtube_title);
-    if (metadata.youtube_description) params.append('youtube_description', metadata.youtube_description);
-    if (metadata.hashtags) params.append('hashtags', JSON.stringify(metadata.hashtags));
-
-    const response = await fetch(`${API_BASE_URL}/api/video/${videoId}/metadata?${params}`, {
+    const response = await fetch(`${API_BASE_URL}/api/video/${videoId}/metadata`, {
         method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            youtube_title: metadata.youtube_title || null,
+            youtube_description: metadata.youtube_description || null,
+            hashtags: metadata.hashtags || null,
+            youtube_tags: metadata.youtube_tags || null,
+        }),
     });
 
     if (!response.ok) {
@@ -55,12 +56,26 @@ export async function updateVideoMetadata(videoId, metadata) {
 }
 
 /**
- * Approve video for upload
+ * Approve video and publish to YouTube.
+ * Sends final metadata for persistence + upload in one call.
  */
-export async function approveVideo(videoId) {
-    const response = await fetch(`${API_BASE_URL}/api/video/${videoId}/approve`, {
+export async function approveVideo(videoId, metadata = null) {
+    const options = {
         method: 'POST',
-    });
+    };
+
+    if (metadata) {
+        options.headers = { 'Content-Type': 'application/json' };
+        options.body = JSON.stringify({
+            youtube_title: metadata.youtube_title || null,
+            youtube_description: metadata.youtube_description || null,
+            hashtags: metadata.hashtags || null,
+            youtube_tags: metadata.youtube_tags || null,
+            privacy_status: metadata.privacy_status || 'private',
+        });
+    }
+
+    const response = await fetch(`${API_BASE_URL}/api/video/${videoId}/approve`, options);
 
     if (!response.ok) {
         throw new Error(`Failed to approve video: ${response.statusText}`);

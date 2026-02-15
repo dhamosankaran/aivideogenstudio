@@ -24,6 +24,7 @@ class BackgroundMusicService:
         "big_tech": "background.mp3",
         "leader_quote": "background.mp3",
         "arxiv_paper": "background.mp3",
+        "book_review": "background.mp3",
     }
     
     # Fallback track for any content type
@@ -86,6 +87,10 @@ class BackgroundMusicService:
         # arXiv papers are more technical, keep music subtle
         if content_type == "arxiv_paper":
             return 0.10  # 10%
+        
+        # Book reviews: calm background, narration-focused
+        if content_type == "book_review":
+            return 0.10  # 10% - longer videos need subtle music
         
         # News content can have slightly more energy
         return 0.12  # 12%

@@ -7,7 +7,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from app.config import settings
 from app.database import init_db
-from app.routers import providers
+from app.routers import (
+    providers,
+    feeds,
+    articles,
+    content_router,
+    scripts,
+    audio,
+    video,
+    news_router,
+    health,
+    youtube_router,
+    book_router,
+)
 from app.utils.logger import setup_logging, get_logger
 
 logger = get_logger(__name__)
@@ -52,39 +64,16 @@ app.add_middleware(
 
 # Include routers
 app.include_router(providers.router)
-
-# Phase 2 routers
-from app.routers import feeds, articles
 app.include_router(feeds.router)
 app.include_router(articles.router)
-
-# Phase 2 - Content Curation UI
-from app.routers import content_router
 app.include_router(content_router.router)
-
-# Phase 3 router
-from app.routers import scripts
 app.include_router(scripts.router)
-
-# Phase 5 router
-from app.routers import audio
 app.include_router(audio.router, prefix="/api/audio", tags=["audio"])
-
-# Phase 6 router
-from app.routers import video
 app.include_router(video.router, prefix="/api/video", tags=["video"])
-
-# NewsAPI router
-from app.routers import news_router
 app.include_router(news_router.router)
-
-# Health monitoring
-from app.routers import health
 app.include_router(health.router)
-
-# Phase 2.5 - YouTube Transcript Analysis
-from app.routers import youtube_router
 app.include_router(youtube_router.router)
+app.include_router(book_router.router)
 
 
 

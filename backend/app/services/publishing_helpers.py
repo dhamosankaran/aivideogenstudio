@@ -30,7 +30,7 @@ Original: {article_title}
 Summary: {article_summary}
 
 Requirements:
-- 60 characters max
+- 100 characters max
 - Include 1-2 relevant emoji
 - Accurate (no clickbait)
 - Engaging hook
@@ -40,10 +40,10 @@ Return ONLY the title."""
     try:
         title = await llm.generate_text(prompt, max_tokens=50)
         title = title.strip().replace('"', '').replace("'", "")
-        return title[:60]
+        return title[:100]
     except Exception as e:
         logger.error(f"Error generating catchy title: {e}")
-        return article_title[:60]
+        return article_title[:100]
 
 
 async def generate_hashtags(

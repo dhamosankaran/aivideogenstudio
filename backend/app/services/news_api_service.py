@@ -6,7 +6,7 @@ Provides comprehensive news coverage from 80,000+ sources worldwide.
 
 import logging
 from typing import List, Dict, Any, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from newsapi import NewsApiClient
 from sqlalchemy.orm import Session
 
@@ -61,7 +61,7 @@ class NewsAPIService:
         try:
             # Default to last 7 days if no date specified
             if not from_date:
-                from_date = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
+                from_date = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d")
             
             logger.info(f"Searching NewsAPI: query='{query}', from={from_date}, to={to_date}")
             
@@ -186,7 +186,7 @@ class NewsAPIService:
                                 article_data["publishedAt"].replace("Z", "+00:00")
                             )
                         except:
-                            published_at = datetime.utcnow()
+                            published_at = datetime.now(timezone.utc)
                     
                     # Create article
                     article = Article(
@@ -196,7 +196,7 @@ class NewsAPIService:
                         url=url,
                         content=article_data.get("content", ""),
                         author=article_data.get("author", ""),
-                        published_at=published_at or datetime.utcnow(),
+                        published_at=published_at or datetime.now(timezone.utc),
                         is_processed=False
                     )
                     

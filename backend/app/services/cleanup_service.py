@@ -2,7 +2,7 @@
 Resource cleanup service for managing disk space and old content.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from sqlalchemy.orm import Session
 from app.models import Video, Audio, Script
@@ -27,7 +27,7 @@ class CleanupService:
         Returns:
             Number of videos deleted
         """
-        cutoff = datetime.utcnow() - timedelta(days=days_to_keep)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days_to_keep)
         
         old_videos = self.db.query(Video).filter(
             Video.created_at < cutoff
@@ -78,7 +78,7 @@ class CleanupService:
         Returns:
             Number of audio files deleted
         """
-        cutoff = datetime.utcnow() - timedelta(days=days_to_keep)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days_to_keep)
         
         old_audio = self.db.query(Audio).filter(
             Audio.created_at < cutoff

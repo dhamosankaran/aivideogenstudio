@@ -4,7 +4,12 @@ Database models for AIVideoGen.
 Defines SQLAlchemy models for RSS feeds, articles, videos, and configuration.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def _utcnow():
+    """Return current UTC time (timezone-aware)."""
+    return datetime.now(timezone.utc)
 from typing import Optional
 from sqlalchemy import Column, Integer, String, Text, Float, Boolean, DateTime, ForeignKey, JSON
 from sqlalchemy.orm import relationship, DeclarativeBase
@@ -24,8 +29,8 @@ class Feed(Base):
     url = Column(String, unique=True, nullable=False, index=True)
     category = Column(String, nullable=True)
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
     
     # Relationships
     articles = relationship("Article", back_populates="feed", cascade="all, delete-orphan")
@@ -38,6 +43,7 @@ class Article(Base):
     id = Column(Integer, primary_key=True, index=True)
     feed_id = Column(Integer, ForeignKey("feeds.id"), nullable=True)  # Nullable for YouTube sources
     youtube_source_id = Column(Integer, ForeignKey("youtube_sources.id"), nullable=True)
+    book_source_id = Column(Integer, ForeignKey("book_sources.id"), nullable=True)
     
     # Article metadata
     title = Column(String, nullable=False)
@@ -77,12 +83,13 @@ class Article(Base):
     is_processed = Column(Boolean, default=False)
     is_selected = Column(Boolean, default=False)  # Selected for video generation
     
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
     
     # Relationships
     feed = relationship("Feed", back_populates="articles")
     youtube_source = relationship("YouTubeSource", back_populates="articles")
+    book_source = relationship("BookSource", back_populates="articles")
     scripts = relationship("Script", back_populates="article", cascade="all, delete-orphan")
 
 
@@ -130,8 +137,8 @@ class Script(Base):
     # Cost tracking
     generation_cost = Column(Float, default=0.0)
     
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
     
     # Relationships
     article = relationship("Article", back_populates="scripts")
@@ -170,7 +177,7 @@ class Audio(Base):
     status = Column(String, default="pending")  # pending, completed, failed
     error_message = Column(Text, nullable=True)
     
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
     completed_at = Column(DateTime, nullable=True)
     
     # Relationships
@@ -200,6 +207,7 @@ class Video(Base):
     end_screen_path = Column(String, nullable=True)  # Path to end screen
     youtube_title = Column(String, nullable=True)  # Final YouTube title
     youtube_description = Column(Text, nullable=True)  # Final YouTube description
+    youtube_tags = Column(JSON, nullable=True)  # ["atomic habits summary", "book review", ...]
     
     # Video validation (Phase 2 - UI)
     validation_status = Column(String, default="pending")  # pending, approved, rejected
@@ -213,14 +221,14 @@ class Video(Base):
     status = Column(String, default="pending")  # pending, rendering, completed, failed
     error_message = Column(Text, nullable=True)
     
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
     completed_at = Column(DateTime, nullable=True)
     
     # Relationships
     script = relationship("Script", back_populates="videos")
     audio = relationship("Audio", back_populates="videos")
     
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     @property
     def article_title(self) -> Optional[str]:
@@ -239,8 +247,8 @@ class Config(Base):
     value = Column(JSON, nullable=False)
     description = Column(Text, nullable=True)
     
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class YouTubeSource(Base):
@@ -269,8 +277,38 @@ class YouTubeSource(Base):
     analysis_status = Column(String, default="pending")  # pending, analyzing, completed, failed
     error_message = Column(Text, nullable=True)
     
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
     analyzed_at = Column(DateTime, nullable=True)
     
     # Relationships
     articles = relationship("Article", back_populates="youtube_source", cascade="all, delete-orphan")
+
+
+class BookSource(Base):
+    """Book source for book review shorts."""
+    __tablename__ = "book_sources"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    open_library_key = Column(String, unique=True, nullable=False, index=True)  # e.g., "/works/OL123W"
+    google_books_id = Column(String, nullable=True)
+    
+    # Book metadata
+    title = Column(String, nullable=False)
+    author = Column(String, nullable=True)
+    first_publish_year = Column(Integer, nullable=True)
+    description = Column(Text, nullable=True)
+    subjects = Column(JSON, nullable=True)  # ["Self-Help", "Psychology"]
+    cover_url = Column(String, nullable=True)
+    page_count = Column(Integer, nullable=True)
+    
+    # AI Analysis
+    key_takeaways = Column(JSON, nullable=True)  # LLM-generated key points
+    suggested_angles = Column(JSON, nullable=True)  # Video angle options
+    analysis_status = Column(String, default="pending")  # pending, analyzing, completed, failed
+    error_message = Column(Text, nullable=True)
+    
+    created_at = Column(DateTime, default=_utcnow)
+    analyzed_at = Column(DateTime, nullable=True)
+    
+    # Relationships
+    articles = relationship("Article", back_populates="book_source", cascade="all, delete-orphan")
