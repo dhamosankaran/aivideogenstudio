@@ -47,5 +47,28 @@ backend/data/
 backend/outputs/
 backend/temp/
 backend/cache/
+backend/assets/downloads/
 frontend/dist/
 frontend/.vite/
+
+# Generated Media and Data
+*.mp4
+*.mov
+*.avi
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.json
+
+# Exclude configuration and critical assets from the above
+!package.json
+!package-lock.json
+!tsconfig.json
+!jsconfig.json
+!.agent/
+!backend/app/schemas/*.json
+!docs/**/*.json
+!frontend/src/assets/**
+!backend/assets/end_screens/**
+!backend/assets/music/**
