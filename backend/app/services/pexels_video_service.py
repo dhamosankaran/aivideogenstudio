@@ -53,7 +53,8 @@ class PexelsVideoService:
         keywords: List[str],
         orientation: str = "portrait",
         min_duration: int = 5,
-        max_duration: int = 20
+        max_duration: int = 20,
+        output_dir: Optional[Path] = None
     ) -> Optional[Path]:
         """
         Search for a video and download it.
@@ -63,10 +64,15 @@ class PexelsVideoService:
             orientation: Video orientation (portrait, landscape, square)
             min_duration: Minimum video duration in seconds
             max_duration: Maximum video duration in seconds
+            output_dir: Optional project-specific directory to copy the video into.
+                         The global cache is always used for the download; when
+                         output_dir is set the file is copied there as well.
             
         Returns:
             Path to downloaded video, or None if not found
         """
+        import shutil
+        
         # Create cache key from keywords
         cache_key = self._get_cache_key(keywords)
         cached_path = self.CACHE_DIR / f"{cache_key}.mp4"
@@ -74,6 +80,15 @@ class PexelsVideoService:
         # Check cache first
         if cached_path.exists():
             logger.info(f"Using cached video: {cached_path}")
+            # Copy to project dir if requested
+            if output_dir:
+                output_dir = Path(output_dir)
+                output_dir.mkdir(parents=True, exist_ok=True)
+                project_path = output_dir / f"video_{cache_key[:16]}.mp4"
+                if not project_path.exists():
+                    shutil.copy2(cached_path, project_path)
+                    logger.info(f"Copied to project dir: {project_path}")
+                return project_path
             return cached_path
         
         # Search Pexels Videos API
@@ -120,13 +135,23 @@ class PexelsVideoService:
             video_response = requests.get(video_url, timeout=60, stream=True)
             video_response.raise_for_status()
             
-            # Save to cache
+            # Save to global cache
             with open(cached_path, 'wb') as f:
                 for chunk in video_response.iter_content(chunk_size=8192):
                     f.write(chunk)
             
             file_size = cached_path.stat().st_size / (1024 * 1024)
             logger.info(f"Video cached: {cached_path} ({file_size:.1f} MB)")
+            
+            # Copy to project dir if requested
+            if output_dir:
+                output_dir = Path(output_dir)
+                output_dir.mkdir(parents=True, exist_ok=True)
+                project_path = output_dir / f"video_{cache_key[:16]}.mp4"
+                shutil.copy2(cached_path, project_path)
+                logger.info(f"Copied to project dir: {project_path}")
+                return project_path
+            
             return cached_path
             
         except requests.exceptions.Timeout:

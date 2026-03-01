@@ -6,6 +6,7 @@ import {
   Library,
   Youtube,
   BookOpen,
+  Flame,
   FileText,
   Film,
   BarChart3,
@@ -18,6 +19,7 @@ import './App.css';
 const ContentLibrary = lazy(() => import('./pages/ContentLibrary'));
 const YouTubeImport = lazy(() => import('./pages/YouTubeImport'));
 const BookReview = lazy(() => import('./pages/BookReview'));
+const ViralNews = lazy(() => import('./pages/ViralNews'));
 const ScriptReview = lazy(() => import('./pages/ScriptReview'));
 const VideoValidation = lazy(() => import('./pages/VideoValidation'));
 const Dashboard = lazy(() => import('./pages/Dashboard'));
@@ -35,6 +37,7 @@ const NAV_ITEMS = [
   { to: '/content', icon: Library, label: 'Content Library', section: 'content' },
   { to: '/youtube', icon: Youtube, label: 'YouTube Import', section: 'content' },
   { to: '/books', icon: BookOpen, label: 'Book Reviews', section: 'content' },
+  { to: '/viral', icon: Flame, label: 'Viral News', section: 'content' },
   { to: '/scripts', icon: FileText, label: 'Script Review', section: 'create' },
   { to: '/videos', icon: Film, label: 'Video Validation', section: 'create' },
   { to: '/dashboard', icon: BarChart3, label: 'Dashboard', section: 'overview' },
@@ -117,6 +120,7 @@ function App() {
               <Route path="/content" element={<ContentLibrary />} />
               <Route path="/youtube" element={<YouTubeImport />} />
               <Route path="/books" element={<BookReview />} />
+              <Route path="/viral" element={<ViralNews />} />
               <Route path="/scripts" element={<ScriptReview />} />
               <Route path="/videos" element={<VideoValidation />} />
               <Route path="/dashboard" element={<Dashboard />} />

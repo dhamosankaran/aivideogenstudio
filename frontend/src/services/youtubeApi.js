@@ -202,3 +202,182 @@ export async function trimAndGenerate(sourceId, insightIndex, startTime, endTime
 
     return response.json();
 }
+
+
+// ═══════════════════════════════════════════════════════════════
+// Phase 3: Universal Download & Editor API
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Get video metadata without downloading.
+ * @param {string} url - Video URL (YouTube, X/Twitter, LinkedIn)
+ * @returns {Promise<Object>} Video info (title, duration, platform, etc.)
+ */
+export async function getVideoInfo(url) {
+    const response = await fetch(`${API_BASE}/api/youtube/info`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url })
+    });
+
+    if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to get video info');
+    }
+
+    return response.json();
+}
+
+/**
+ * Download a video from any supported platform.
+ * @param {string} url - Video URL (YouTube, X/Twitter, LinkedIn)
+ * @param {boolean} stripAudio - Remove original audio
+ * @returns {Promise<Object>} Download response with source_id, file_path, etc.
+ */
+export async function downloadVideo(url, stripAudio = false) {
+    const response = await fetch(`${API_BASE}/api/youtube/download`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, strip_audio: stripAudio })
+    });
+
+    if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to download video');
+    }
+
+    return response.json();
+}
+
+/**
+ * Get structured transcript for a source.
+ * @param {number} sourceId - YouTubeSource ID
+ * @returns {Promise<Object>} Transcript with segments
+ */
+export async function getTranscript(sourceId) {
+    const response = await fetch(
+        `${API_BASE}/api/youtube/sources/${sourceId}/transcript`
+    );
+
+    if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to get transcript');
+    }
+
+    return response.json();
+}
+
+/**
+ * Get the music library (available tracks).
+ * @returns {Promise<Object>} Music library with tracks list
+ */
+export async function getMusicLibrary() {
+    const response = await fetch(`${API_BASE}/api/youtube/music-library`);
+
+    if (!response.ok) {
+        throw new Error('Failed to fetch music library');
+    }
+
+    return response.json();
+}
+
+/**
+ * Generate a video using the editor pipeline (requires downloaded video).
+ * @param {number} sourceId - YouTubeSource ID
+ * @param {Object} options - Editor options (trim, strip audio, music, captions)
+ * @returns {Promise<Object>} Editor generation response
+ */
+export async function editorGenerate(sourceId, options = {}) {
+    const response = await fetch(
+        `${API_BASE}/api/youtube/sources/${sourceId}/editor/generate`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                trim_start: options.trimStart ?? null,
+                trim_end: options.trimEnd ?? null,
+                strip_audio: options.stripAudio ?? true,
+                music_track: options.musicTrack ?? null,
+                music_volume: options.musicVolume ?? 0.12,
+                generate_captions: options.generateCaptions ?? true,
+                caption_source: options.captionSource ?? 'transcript',
+                commentary_style: options.commentaryStyle ?? 'reaction',
+                auto_approve: options.autoApprove ?? true,
+                content_type: options.contentType ?? 'youtube_import'
+            })
+        }
+    );
+
+    if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to generate editor video');
+    }
+
+    return response.json();
+}
+
+/**
+ * Generate a script preview from transcript/summary (no video download needed).
+ * @param {number} sourceId - YouTubeSource ID
+ * @param {Object} options - Script options (trim range, style, content type)
+ * @returns {Promise<Object>} Script preview with scenes and catchy title
+ */
+export async function generateScript(sourceId, options = {}) {
+    const response = await fetch(
+        `${API_BASE}/api/youtube/sources/${sourceId}/generate-script`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                trim_start: options.trimStart ?? null,
+                trim_end: options.trimEnd ?? null,
+                strip_audio: options.stripAudio ?? true,
+                music_track: options.musicTrack ?? null,
+                music_volume: options.musicVolume ?? 0.12,
+                generate_captions: options.generateCaptions ?? true,
+                caption_source: options.captionSource ?? 'transcript',
+                commentary_style: options.commentaryStyle ?? 'reaction',
+                auto_approve: false,
+                content_type: options.contentType ?? 'youtube_import'
+            })
+        }
+    );
+
+    if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to generate script preview');
+    }
+
+    return response.json();
+}
+
+/**
+ * Approve a reviewed script and start video rendering.
+ * Passes editor settings so the backend can download/edit the video.
+ * @param {number} scriptId - Script ID to approve
+ * @param {Object} editorSettings - Trim, audio, music settings
+ * @returns {Promise<Object>} Rendering response
+ */
+export async function approveAndRender(scriptId, editorSettings = {}) {
+    const params = new URLSearchParams({
+        trim_start: editorSettings.trimStart ?? 0,
+        trim_end: editorSettings.trimEnd ?? 60,
+        strip_audio: editorSettings.stripAudio ?? true,
+        music_volume: editorSettings.musicVolume ?? 0.12,
+    });
+    if (editorSettings.musicTrack) {
+        params.set('music_track', editorSettings.musicTrack);
+    }
+
+    const response = await fetch(
+        `${API_BASE}/api/youtube/scripts/${scriptId}/approve-and-render?${params}`,
+        { method: 'POST' }
+    );
+
+    if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to approve and render');
+    }
+
+    return response.json();
+}

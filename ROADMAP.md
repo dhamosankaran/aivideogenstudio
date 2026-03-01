@@ -307,6 +307,20 @@ Extract key insights from any YouTube video and create viral Shorts with two cre
   - Generate video summary script (key takeaways, why read it)
   - Create engaging video summarizing the book
   - Potential APIs: Google Books, Open Library, Goodreads
+- **Human-Centric Visuals & Contextual Grounding** (NEW — CTO Approved 2026-02-22)
+  - Human Presence Weight: prioritize B-roll of people when script uses personal pronouns
+  - Avatar Integration Hook: stub for HeyGen/Synthesia talking-head overlays
+  - Book in 30% of Scenes: ensure physical book appears in ≥3/8 scenes
+  - Match-Cut Transitions: `transition_hint` schema + variable crossfade durations
+- **Viral News Video Flow** (NEW — CTO Approved 2026-02-28)
+  - Discover trending/viral news via NewsAPI (top headlines + search)
+  - LLM-powered virality scoring (1-10) with reasons and key fact extraction
+  - Suggested video angles per news story (3-4 clickable title options)
+  - Dedicated 2-3 scene urgency-driven script prompt (20-30s shorts)
+  - `ViralNewsSource` model + `ViralNewsService` following BookSource pattern
+  - React UI with category tabs, virality badges, and inline script preview
+  - Feeds into existing Article → Script → Audio → Video pipeline
+  - Foundation pattern for all future content journeys (plug-in architecture)
 
 **Estimated**: 3-4 weeks
 

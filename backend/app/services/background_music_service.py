@@ -3,12 +3,16 @@ Background music service for video composition.
 
 Provides royalty-free music tracks organized by content type
 for mixing with narration audio at 10-15% volume.
+
+Music mapping is driven by the central content_types registry.
 """
 
 import logging
 from pathlib import Path
 from typing import Optional, List
 import random
+
+from app.content_types import get_music_file, get_music_volume, DEFAULT_FALLBACK_MUSIC
 
 logger = logging.getLogger(__name__)
 
@@ -18,17 +22,8 @@ class BackgroundMusicService:
     
     MUSIC_DIR = Path("assets/music")
     
-    # Music mapping by content type - using user's custom background.mp3
-    MUSIC_MAP = {
-        "daily_update": "background.mp3",
-        "big_tech": "background.mp3",
-        "leader_quote": "background.mp3",
-        "arxiv_paper": "background.mp3",
-        "book_review": "background.mp3",
-    }
-    
-    # Fallback track for any content type
-    FALLBACK_TRACK = "background.mp3"
+    # Fallback track when the registry-mapped file doesn't exist
+    FALLBACK_TRACK = DEFAULT_FALLBACK_MUSIC  # "Tech.mp3"
     
     def __init__(self):
         """Initialize music service and ensure directory exists."""
@@ -38,14 +33,17 @@ class BackgroundMusicService:
         """
         Get appropriate music track for content type.
         
+        Looks up the track name from the central content_types registry,
+        then falls back to FALLBACK_TRACK → random available track → None.
+        
         Args:
             content_type: Type of content (daily_update, big_tech, etc.)
             
         Returns:
             Path to music file, or None if not found
         """
-        # Get mapped track or fallback
-        track_name = self.MUSIC_MAP.get(content_type, self.FALLBACK_TRACK)
+        # Get mapped track from central registry
+        track_name = get_music_file(content_type)
         track_path = self.MUSIC_DIR / track_name
         
         # Check if track exists
@@ -56,7 +54,7 @@ class BackgroundMusicService:
         # Try fallback
         fallback_path = self.MUSIC_DIR / self.FALLBACK_TRACK
         if fallback_path.exists():
-            logger.warning(f"Track {track_name} not found, using fallback")
+            logger.warning(f"Track {track_name} not found, using fallback: {self.FALLBACK_TRACK}")
             return fallback_path
         
         # Check if any music exists
@@ -78,22 +76,9 @@ class BackgroundMusicService:
         Get recommended music volume for content type.
         
         Returns value between 0.0 and 1.0 (0-100%).
-        Music should be subtle, not overpowering narration.
+        Pulled from the central content_types registry.
         """
-        # Leader quotes need quieter music
-        if content_type == "leader_quote":
-            return 0.08  # 8%
-        
-        # arXiv papers are more technical, keep music subtle
-        if content_type == "arxiv_paper":
-            return 0.10  # 10%
-        
-        # Book reviews: calm background, narration-focused
-        if content_type == "book_review":
-            return 0.10  # 10% - longer videos need subtle music
-        
-        # News content can have slightly more energy
-        return 0.12  # 12%
+        return get_music_volume(content_type)
 
 
 def check_music_setup():

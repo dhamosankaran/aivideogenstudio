@@ -55,11 +55,19 @@ frontend/.vite/
 *.mp4
 *.mov
 *.avi
+*.mkv
+*.webm
 *.jpg
 *.jpeg
 *.png
 *.webp
 *.json
+*script*.json
+*.mp3
+*.wav
+*.ogg
+*.m4a
+*.aac
 
 # Exclude configuration and critical assets from the above
 !package.json
@@ -70,7 +78,3 @@ frontend/.vite/
 !backend/app/schemas/*.json
 !docs/**/*.json
 !frontend/src/assets/**
-!backend/assets/*.png
-!backend/assets/*.jpg
-!backend/assets/end_screens/**
-!backend/assets/music/**

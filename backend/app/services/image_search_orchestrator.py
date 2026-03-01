@@ -2,6 +2,7 @@
 Image Search Orchestrator - Multi-source image search with fallback chain.
 
 Priority order (optimized for topic-relevant images):
+0. Gemini AI (AI-generated images - best for book reviews / abstract concepts)
 1. Serper (Google Images - best for news/tech topics)
 2. Unsplash (high quality stock photos)
 3. Pexels (fallback stock photos)
@@ -29,26 +30,33 @@ class ImageSearchOrchestrator:
         image_path = await orchestrator.search_image_async(["Waymo", "self-driving"])
     """
     
-    CACHE_DIR = Path("data/images")
+    # Ephemeral cache for raw Serper/Pexels downloads (purgeable)
+    CACHE_DIR = Path("data/images/_cache")
     
-    # Content-type subdirectories for organized asset management
-    CONTENT_TYPE_DIRS = {
-        "book_review": "book_reviews",
-        "daily_update": "daily_news",
-        "big_tech": "tech_news",
-        "youtube_import": "youtube",
-        "leader_quote": "quotes",
-        "arxiv_paper": "research",
-    }
+    # Legacy fallback when no project dir is specified
+    FALLBACK_DIR = Path("data/images")
     
     def __init__(self):
         """Initialize with available image providers."""
         self.CACHE_DIR.mkdir(parents=True, exist_ok=True)
         
         # Initialize providers (gracefully handle missing API keys)
+        self.gemini_image = None
         self.serper = None
         self.unsplash = None
         self.pexels = None
+        
+        # Gemini AI image generation (best for book reviews / abstract concepts)
+        try:
+            from app.services.gemini_image_service import GeminiImageService
+            gemini = GeminiImageService()
+            if gemini.is_available:
+                self.gemini_image = gemini
+                logger.info("✓ Gemini Image service initialized (AI generation)")
+            else:
+                logger.info("Gemini Image API key not configured (optional)")
+        except Exception as e:
+            logger.warning(f"Could not initialize Gemini Image: {e}")
         
         # Try Serper first (best for topic-relevant images)
         try:
@@ -90,7 +98,10 @@ class ImageSearchOrchestrator:
         topic_query: Optional[str] = None,
         orientation: str = "portrait",
         size: str = "regular",
-        content_type: str = ""
+        content_type: str = "",
+        output_dir: Optional[Path] = None,
+        human_presence_boost: bool = False,
+        ai_prompt: Optional[str] = None
     ) -> Optional[Path]:
         """
         Async search for an image across all providers.
@@ -100,6 +111,10 @@ class ImageSearchOrchestrator:
             topic_query: Specific topic query (for Serper - uses article title if set)
             orientation: Image orientation (portrait, landscape)
             size: Image size
+            content_type: Content type (for legacy fallback path)
+            output_dir: Project directory to save image (preferred over content_type)
+            human_presence_boost: If True, append 'person' to stock queries to
+                                  bias results toward human-centric imagery
             
         Returns:
             Path to downloaded image, or None if not found
@@ -111,24 +126,41 @@ class ImageSearchOrchestrator:
         serper_query = topic_query or " ".join(keywords[:4])
         stock_query = " ".join(keywords[:3])
         
+        # Human presence boost: append "person" to stock queries for people-centric results
+        if human_presence_boost and "person" not in stock_query.lower():
+            stock_query = f"{stock_query} person"
+            logger.info(f"[HumanBoost] Boosted stock query: {stock_query}")
+        
         # Create cache key
         cache_key = self._get_cache_key(keywords + ([topic_query] if topic_query else []))
         
-        # Use content-type subfolder if specified
-        if content_type and content_type in self.CONTENT_TYPE_DIRS:
-            cache_dir = self.CACHE_DIR / self.CONTENT_TYPE_DIRS[content_type]
-            cache_dir.mkdir(parents=True, exist_ok=True)
+        # Determine output directory:
+        # 1. Explicit output_dir (project folder) — preferred
+        # 2. Fallback dir for legacy callers
+        if output_dir:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            target_dir = output_dir
         else:
-            cache_dir = self.CACHE_DIR
+            self.FALLBACK_DIR.mkdir(parents=True, exist_ok=True)
+            target_dir = self.FALLBACK_DIR
         
-        cached_path = cache_dir / f"{cache_key}.jpg"
+        cached_path = target_dir / f"{cache_key}.jpg"
         
-        # Check cache first
+        # Check cache first (in target directory)
         if cached_path.exists():
             logger.info(f"Using cached image: {cached_path}")
             return cached_path
         
-        # Try Serper first (best for topic-specific images)
+        # Try Gemini AI generation first (if prompt provided)
+        if ai_prompt and self.gemini_image:
+            logger.info(f"[GeminiAI] Generating image for: {ai_prompt[:80]}...")
+            # Use .png for AI-generated images (lossless quality)
+            ai_path = cached_path.with_suffix('.png')
+            result = await self._generate_gemini_image_async(ai_prompt, ai_path)
+            if result:
+                return result
+        
+        # Try Serper (best for topic-specific images)
         if self.serper:
             logger.info(f"[Serper] Searching: {serper_query[:50]}...")
             result = await self._search_serper_async(serper_query, cached_path)
@@ -158,7 +190,8 @@ class ImageSearchOrchestrator:
         topic_query: Optional[str] = None,
         orientation: str = "portrait",
         size: str = "regular",
-        content_type: str = ""
+        content_type: str = "",
+        output_dir: Optional[Path] = None
     ) -> Optional[Path]:
         """
         Sync wrapper for search_image_async.
@@ -166,22 +199,18 @@ class ImageSearchOrchestrator:
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                # If already in async context, use run_coroutine_threadsafe
                 import concurrent.futures
                 future = asyncio.ensure_future(
-                    self.search_image_async(keywords, topic_query, orientation, size, content_type)
+                    self.search_image_async(keywords, topic_query, orientation, size, content_type, output_dir)
                 )
-                # This is a workaround for sync code calling async
-                # In production, prefer using search_image_async directly
                 return asyncio.get_event_loop().run_until_complete(future)
             else:
                 return loop.run_until_complete(
-                    self.search_image_async(keywords, topic_query, orientation, size, content_type)
+                    self.search_image_async(keywords, topic_query, orientation, size, content_type, output_dir)
                 )
         except RuntimeError:
-            # No event loop - create one
             return asyncio.run(
-                self.search_image_async(keywords, topic_query, orientation, size, content_type)
+                self.search_image_async(keywords, topic_query, orientation, size, content_type, output_dir)
             )
     
     async def _search_serper_async(
@@ -189,29 +218,57 @@ class ImageSearchOrchestrator:
         query: str, 
         output_path: Path
     ) -> Optional[Path]:
-        """Search Serper and download image."""
+        """Search Serper and download image with title-aware relevance filtering."""
         try:
             # Append negative keywords for book-related searches to filter noise
             search_query = query
             query_lower = query.lower()
-            if any(term in query_lower for term in ["book", "author", "reading", "habit"]):
-                search_query = f"{query} -amazon -kindle -ebay -audible -religious"
+            is_book_query = any(term in query_lower for term in ["book", "author", "reading", "habit", "review"])
+            
+            if is_book_query:
+                search_query = f"{query} -amazon -kindle -ebay -audible -religious -flipkart -goodreads"
                 logger.info(f"[Serper] Book-aware query with negative keywords")
             
-            images = await self.serper.search_images(search_query, num_results=5)
+            images = await self.serper.search_images(search_query, num_results=8)
             
             if not images:
                 logger.info(f"[Serper] No results for: {query[:50]}")
                 return None
             
-            # Try to download the first available image
+            # ==== TITLE-AWARE RELEVANCE FILTERING ====
+            # For book queries, prefer images whose title/source contains book title words.
+            # This prevents "How to Win Friends" from appearing in "7 Habits" videos.
+            if is_book_query:
+                # Extract likely book title words from query (first part, usually the title)
+                # Ignore very short words and common terms
+                stop_words = {'the', 'a', 'an', 'of', 'and', 'in', 'to', 'for', 'by', 'on', 'is',
+                              'book', 'cover', 'front', 'author', 'portrait', 'photo', 'speaking',
+                              'event', 'review', 'recommendation', 'subscribe', 'bestselling',
+                              'infographic', 'sales', 'accolades', 'award', 'target', 'audience',
+                              'person', 'reading', 'concept', 'visual', 'diagram'}
+                title_words = [w.lower() for w in query.split() if len(w) > 2 and w.lower() not in stop_words]
+                
+                if title_words:
+                    def relevance_score(img):
+                        """Score an image result by how many query title words appear in its title/source."""
+                        img_text = f"{img.title} {img.source}".lower()
+                        return sum(1 for w in title_words if w in img_text)
+                    
+                    # Sort by relevance (highest first)
+                    images.sort(key=relevance_score, reverse=True)
+                    
+                    best_score = relevance_score(images[0])
+                    logger.info(f"[Serper] Relevance filtering: top result score={best_score} "
+                               f"title='{images[0].title[:60]}' (query_words={title_words[:5]})")
+            
+            # Try to download the best available image
             for image in images:
                 path = await self.serper.download_image(image, self.CACHE_DIR)
                 if path and path.exists():
                     # Copy to our cache location with consistent naming
                     import shutil
                     shutil.copy(path, output_path)
-                    logger.info(f"[Serper] Downloaded: {output_path}")
+                    logger.info(f"[Serper] Downloaded: {output_path} (title='{image.title[:50]}')")
                     return output_path
             
             return None
@@ -293,9 +350,29 @@ class ImageSearchOrchestrator:
         key_string = "_".join(sorted_keywords)
         return hashlib.md5(key_string.encode()).hexdigest()[:16]
     
+    async def _generate_gemini_image_async(
+        self,
+        prompt: str,
+        output_path: Path
+    ) -> Optional[Path]:
+        """Generate an image using Gemini AI."""
+        try:
+            result = await self.gemini_image.generate_image(
+                prompt=prompt,
+                output_path=output_path
+            )
+            if result and result.exists():
+                logger.info(f"[GeminiAI] Generated: {output_path.name}")
+                return result
+            return None
+        except Exception as e:
+            logger.error(f"[GeminiAI] Error: {e}")
+            return None
+    
     def get_provider_status(self) -> dict:
         """Get status of all providers."""
         return {
+            "gemini_image": bool(self.gemini_image),
             "serper": bool(self.serper),
             "unsplash": bool(self.unsplash),
             "pexels": bool(self.pexels),

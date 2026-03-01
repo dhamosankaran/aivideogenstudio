@@ -6,8 +6,10 @@ import {
     getBook,
     analyzeBook,
     generateBookVideo,
+    generateBookScript,
     prepareBookAssets,
-    getAllBooks
+    getAllBooks,
+    getVoiceOptions
 } from '../services/bookApi';
 import './BookReview.css';
 
@@ -28,6 +30,22 @@ function BookReview() {
     const [generationStep, setGenerationStep] = useState('');
     const [assetPreview, setAssetPreview] = useState(null);
 
+    // Script preview state
+    const [isGeneratingScript, setIsGeneratingScript] = useState(false);
+    const [scriptPreview, setScriptPreview] = useState(null);
+    const [scriptAccepted, setScriptAccepted] = useState(false);
+
+    // TTS state
+    const [voiceOptions, setVoiceOptions] = useState(null);
+    const [selectedProvider, setSelectedProvider] = useState('openai');
+    const [selectedVoice, setSelectedVoice] = useState(null);
+
+    // Background mode state
+    const [backgroundMode, setBackgroundMode] = useState('auto');
+    // Image source state
+    const [imageSource, setImageSource] = useState('stock');
+    // Video source state
+    const [videoSource, setVideoSource] = useState('stock');
     // Load existing books on mount
     useEffect(() => {
         loadBooks();
@@ -121,26 +139,85 @@ function BookReview() {
     useEffect(() => {
         if (selectedBook && selectedBook.analysis_status === 'completed') {
             handlePrepareAssets(selectedBook.id);
+            // Load voice options when book is analyzed
+            loadVoiceOptions();
         } else {
             setAssetPreview(null);
         }
+        // Reset script state when book changes
+        setScriptPreview(null);
+        setScriptAccepted(false);
     }, [selectedBook]);
+
+    const loadVoiceOptions = async () => {
+        try {
+            const options = await getVoiceOptions('book_review');
+            setVoiceOptions(options);
+            // Set defaults from voice config
+            setSelectedProvider(options.default_provider || 'openai');
+            const defaultProvider = options.providers.find(p => p.id === options.default_provider);
+            if (defaultProvider) {
+                setSelectedVoice(defaultProvider.default_voice);
+            }
+        } catch (err) {
+            console.error('Failed to load voice options:', err);
+        }
+    };
+
+    // When provider changes, update voice to provider's default
+    useEffect(() => {
+        if (voiceOptions) {
+            const provider = voiceOptions.providers.find(p => p.id === selectedProvider);
+            if (provider) {
+                setSelectedVoice(provider.default_voice);
+            }
+        }
+    }, [selectedProvider]);
+
+    const handleGenerateScript = async () => {
+        if (!selectedBook) return;
+
+        setIsGeneratingScript(true);
+        setError(null);
+        setScriptPreview(null);
+        setScriptAccepted(false);
+
+        try {
+            const result = await generateBookScript(selectedBook.id, selectedAngle);
+            setScriptPreview(result);
+            setSuccessMessage('Script generated! Review below and approve before generating video.');
+        } catch (err) {
+            setError(err.message);
+        } finally {
+            setIsGeneratingScript(false);
+        }
+    };
 
     const handleGenerateVideo = async () => {
         if (!selectedBook) return;
 
         setIsGenerating(true);
         setError(null);
-        setGenerationStep('Creating script & generating audio...');
+        setGenerationStep('Generating audio with ' + selectedProvider + '...');
 
         try {
-            // Pass project_folder if available ensuring strict asset mode
             const projectFolder = assetPreview?.project_folder;
-            const result = await generateBookVideo(selectedBook.id, selectedAngle, null, projectFolder);
+            const result = await generateBookVideo(
+                selectedBook.id,
+                selectedAngle,
+                null,
+                projectFolder,
+                scriptPreview?.script_id || null,
+                selectedProvider,
+                selectedVoice,
+                backgroundMode,
+                imageSource,
+                videoSource
+            );
 
             setGenerationStep('Video rendering in background...');
             setSuccessMessage(
-                `🎬 ${result.message} Redirecting to Videos...`
+                `🎬 ${result.message} (TTS: ${result.tts_provider} / ${result.voice}) Redirecting...`
             );
 
             setTimeout(() => {
@@ -419,13 +496,6 @@ function BookReview() {
                                             <h3>🎬 Video Asset Preview</h3>
                                             <div className="asset-card">
                                                 <div className="asset-image-container">
-                                                    {/* Use local file serving if possible, or just the URL. 
-                                                        Since backend returns absolute path, we might need to handle serving.
-                                                        For now, assuming backend serves 'data' folder or we use the public URL if available.
-                                                        Actually, let's use the book.cover_url for display if local path isn't web-accessible easily without config.
-                                                        But wait, user wants to see *confirmed* asset. 
-                                                        If we can't serve local file easily, we show the remote URL but label it as "Verified Asset".
-                                                     */}
                                                     <img
                                                         src={selectedBook.cover_url}
                                                         alt="Video Cover Asset"
@@ -442,34 +512,290 @@ function BookReview() {
                                         </div>
                                     )}
 
-                                    {/* Generate Video Button */}
-                                    <div className="book-create-section">
-                                        <button
-                                            className="create-video-btn"
-                                            onClick={handleGenerateVideo}
-                                            disabled={isGenerating}
-                                        >
-                                            {isGenerating ? (
-                                                <>
-                                                    <span className="loading-spinner"></span>
-                                                    {generationStep || 'Generating...'}
-                                                </>
-                                            ) : (
-                                                <>🚀 Generate Book Review Video</>
-                                            )}
-                                        </button>
-                                        {isGenerating && (
-                                            <div className="generation-progress">
-                                                <div className="progress-steps">
-                                                    <span className="step active">📝 Script</span>
-                                                    <span className="step-arrow">→</span>
-                                                    <span className={`step ${generationStep.includes('audio') ? 'active' : ''}`}>🔊 Audio</span>
-                                                    <span className="step-arrow">→</span>
-                                                    <span className={`step ${generationStep.includes('rendering') ? 'active' : ''}`}>🎬 Video</span>
+                                    {/* Step 1: Generate Script Button */}
+                                    {!scriptPreview && (
+                                        <div className="book-create-section">
+                                            <button
+                                                className="generate-script-btn"
+                                                onClick={handleGenerateScript}
+                                                disabled={isGeneratingScript}
+                                            >
+                                                {isGeneratingScript ? (
+                                                    <>
+                                                        <span className="loading-spinner"></span>
+                                                        Generating script...
+                                                    </>
+                                                ) : (
+                                                    <>📝 Generate Script for Review</>
+                                                )}
+                                            </button>
+                                        </div>
+                                    )}
+
+                                    {/* Step 2: Script Preview Panel */}
+                                    {scriptPreview && (
+                                        <div className="script-preview-section">
+                                            <div className="script-preview-header">
+                                                <h3>📝 Script Preview</h3>
+                                                <div className="script-meta-badges">
+                                                    <span className="meta-badge">
+                                                        📊 {scriptPreview.word_count} words
+                                                    </span>
+                                                    <span className="meta-badge">
+                                                        ⏱️ ~{Math.round(scriptPreview.estimated_duration)}s
+                                                    </span>
+                                                    <span className={`meta-badge ${scriptPreview.is_valid ? 'valid' : 'invalid'}`}>
+                                                        {scriptPreview.is_valid ? '✅ Valid' : '⚠️ Issues'}
+                                                    </span>
                                                 </div>
                                             </div>
-                                        )}
-                                    </div>
+
+                                            {scriptPreview.catchy_title && (
+                                                <div className="script-title-preview">
+                                                    <span className="title-label">Title:</span>
+                                                    <span className="title-text">{scriptPreview.catchy_title}</span>
+                                                </div>
+                                            )}
+
+                                            <div className="script-scenes-list">
+                                                {scriptPreview.scenes && scriptPreview.scenes.map((scene, index) => (
+                                                    <div key={index} className="script-scene-card">
+                                                        <div className="scene-header">
+                                                            <span className="scene-number">Scene {scene.scene_number}</span>
+                                                            {scene.visual_cues && (
+                                                                <span className="scene-visual">🎨 {scene.visual_cues}</span>
+                                                            )}
+                                                        </div>
+                                                        <p className="scene-text">{scene.text}</p>
+                                                        {scene.image_keywords && scene.image_keywords.length > 0 && (
+                                                            <div className="scene-keywords">
+                                                                {scene.image_keywords.map((kw, i) => (
+                                                                    <span key={i} className="keyword-tag">{kw}</span>
+                                                                ))}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                ))}
+                                            </div>
+
+                                            {/* Validation errors */}
+                                            {scriptPreview.validation_errors && scriptPreview.validation_errors.length > 0 && (
+                                                <div className="script-validation-warnings">
+                                                    {scriptPreview.validation_errors.map((err, i) => (
+                                                        <div key={i} className="validation-warning">⚠️ {err}</div>
+                                                    ))}
+                                                </div>
+                                            )}
+
+                                            {/* Script Actions */}
+                                            <div className="script-actions">
+                                                <button
+                                                    className={`script-accept-btn ${scriptAccepted ? 'accepted' : ''}`}
+                                                    onClick={() => setScriptAccepted(true)}
+                                                    disabled={scriptAccepted}
+                                                >
+                                                    {scriptAccepted ? '✅ Script Accepted' : '✅ Accept Script'}
+                                                </button>
+                                                <button
+                                                    className="script-regenerate-btn"
+                                                    onClick={handleGenerateScript}
+                                                    disabled={isGeneratingScript}
+                                                >
+                                                    {isGeneratingScript ? (
+                                                        <>
+                                                            <span className="loading-spinner"></span>
+                                                            Regenerating...
+                                                        </>
+                                                    ) : (
+                                                        <>🔄 Regenerate</>
+                                                    )}
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {/* Step 3: TTS Provider & Voice Selection */}
+                                    {scriptAccepted && voiceOptions && (
+                                        <div className="tts-selector-section">
+                                            <h3>🎤 Voice & TTS Settings</h3>
+
+                                            <div className="tts-provider-grid">
+                                                {voiceOptions.providers.map(provider => (
+                                                    <label
+                                                        key={provider.id}
+                                                        className={`tts-provider-card ${selectedProvider === provider.id ? 'selected' : ''}`}
+                                                    >
+                                                        <input
+                                                            type="radio"
+                                                            name="tts-provider"
+                                                            value={provider.id}
+                                                            checked={selectedProvider === provider.id}
+                                                            onChange={() => setSelectedProvider(provider.id)}
+                                                        />
+                                                        <div className="provider-info">
+                                                            <span className="provider-name">{provider.name}</span>
+                                                            <span className="provider-cost">{provider.cost_label}</span>
+                                                        </div>
+                                                        {provider.id === voiceOptions.default_provider && (
+                                                            <span className="recommended-badge">✨ Recommended</span>
+                                                        )}
+                                                    </label>
+                                                ))}
+                                            </div>
+
+                                            <div className="voice-selector-wrapper">
+                                                <label className="voice-label">Voice:</label>
+                                                <select
+                                                    className="voice-select"
+                                                    value={selectedVoice || ''}
+                                                    onChange={(e) => setSelectedVoice(e.target.value)}
+                                                >
+                                                    {voiceOptions.voices[selectedProvider] &&
+                                                        voiceOptions.voices[selectedProvider].map(voice => (
+                                                            <option key={voice.id} value={voice.id}>
+                                                                {voice.name} — {voice.tone}
+                                                            </option>
+                                                        ))
+                                                    }
+                                                </select>
+                                                {voiceOptions.voices[selectedProvider] && (
+                                                    <div className="voice-tone-hint">
+                                                        {voiceOptions.voices[selectedProvider].find(v => v.id === selectedVoice)?.tone || ''}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {/* Step 4: Visual Settings — Image Source, Video Source, Background Mode */}
+                                    {scriptAccepted && (
+                                        <div className="tts-selector-section" style={{ borderTop: '1px solid rgba(212, 175, 55, 0.2)', paddingTop: '1.5rem' }}>
+                                            <h3>🎨 Visual Settings</h3>
+
+                                            {/* Image Source */}
+                                            <p style={{ fontSize: '0.85rem', color: '#a0855a', marginBottom: '0.5rem', marginTop: '1rem' }}>
+                                                Image Source
+                                            </p>
+                                            <div className="tts-provider-grid">
+                                                {[
+                                                    { id: 'stock', label: '🖼️ Stock Photos', desc: 'Pexels + Google image search', badge: null },
+                                                    { id: 'ai_generated', label: '✨ Gemini AI', desc: 'AI-generated cinematic images', badge: 'Beta' }
+                                                ].map(src => (
+                                                    <label
+                                                        key={src.id}
+                                                        className={`tts-provider-card ${imageSource === src.id ? 'selected' : ''}`}
+                                                    >
+                                                        <input
+                                                            type="radio"
+                                                            name="img-source"
+                                                            value={src.id}
+                                                            checked={imageSource === src.id}
+                                                            onChange={() => setImageSource(src.id)}
+                                                        />
+                                                        <div className="provider-info">
+                                                            <span className="provider-name">{src.label}</span>
+                                                            <span className="provider-cost" style={{ fontSize: '0.72rem' }}>{src.desc}</span>
+                                                        </div>
+                                                        {src.badge && (
+                                                            <span className="recommended-badge" style={{ background: 'rgba(99,102,241,0.15)', color: '#818cf8' }}>🧪 {src.badge}</span>
+                                                        )}
+                                                    </label>
+                                                ))}
+                                            </div>
+
+                                            {/* Video Background Source */}
+                                            <p style={{ fontSize: '0.85rem', color: '#a0855a', marginBottom: '0.5rem', marginTop: '1.2rem' }}>
+                                                Video Background
+                                            </p>
+                                            <div className="tts-provider-grid">
+                                                {[
+                                                    { id: 'stock', label: '🎬 Stock Videos', desc: 'Pexels stock video library', badge: null },
+                                                    { id: 'veo', label: '✨ Gemini Veo', desc: 'AI-generated 8s cinematic clips (~1min/scene)', badge: 'Beta' }
+                                                ].map(src => (
+                                                    <label
+                                                        key={src.id}
+                                                        className={`tts-provider-card ${videoSource === src.id ? 'selected' : ''}`}
+                                                    >
+                                                        <input
+                                                            type="radio"
+                                                            name="vid-source"
+                                                            value={src.id}
+                                                            checked={videoSource === src.id}
+                                                            onChange={() => setVideoSource(src.id)}
+                                                        />
+                                                        <div className="provider-info">
+                                                            <span className="provider-name">{src.label}</span>
+                                                            <span className="provider-cost" style={{ fontSize: '0.72rem' }}>{src.desc}</span>
+                                                        </div>
+                                                        {src.badge && (
+                                                            <span className="recommended-badge" style={{ background: 'rgba(99,102,241,0.15)', color: '#818cf8' }}>🧪 {src.badge}</span>
+                                                        )}
+                                                    </label>
+                                                ))}
+                                            </div>
+
+                                            {/* Background Mode */}
+                                            <p style={{ fontSize: '0.85rem', color: '#a0855a', marginBottom: '0.5rem', marginTop: '1.2rem' }}>
+                                                Background Mode
+                                            </p>
+                                            <div className="tts-provider-grid">
+                                                {[
+                                                    { id: 'images_only', label: '🖼️ Images Only', desc: 'Book cover + images with Ken Burns effect', badge: 'Classic' },
+                                                    { id: 'videos_only', label: '🎬 Videos Only', desc: 'Video backgrounds for all scenes (except cover)', badge: null },
+                                                    { id: 'auto', label: '✨ Auto Mix', desc: 'Smart mix: cover → videos → images → gradient', badge: 'Recommended' }
+                                                ].map(mode => (
+                                                    <label
+                                                        key={mode.id}
+                                                        className={`tts-provider-card ${backgroundMode === mode.id ? 'selected' : ''}`}
+                                                    >
+                                                        <input
+                                                            type="radio"
+                                                            name="bg-mode"
+                                                            value={mode.id}
+                                                            checked={backgroundMode === mode.id}
+                                                            onChange={() => setBackgroundMode(mode.id)}
+                                                        />
+                                                        <div className="provider-info">
+                                                            <span className="provider-name">{mode.label}</span>
+                                                            <span className="provider-cost" style={{ fontSize: '0.72rem' }}>{mode.desc}</span>
+                                                        </div>
+                                                        {mode.badge && (
+                                                            <span className="recommended-badge">✨ {mode.badge}</span>
+                                                        )}
+                                                    </label>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {/* Step 5: Generate Video Button */}
+                                    {scriptAccepted && (
+                                        <div className="book-create-section">
+                                            <button
+                                                className="create-video-btn"
+                                                onClick={handleGenerateVideo}
+                                                disabled={isGenerating}
+                                            >
+                                                {isGenerating ? (
+                                                    <>
+                                                        <span className="loading-spinner"></span>
+                                                        {generationStep || 'Generating...'}
+                                                    </>
+                                                ) : (
+                                                    <>🚀 Generate Video ({selectedProvider} / {selectedVoice}{imageSource === 'ai_generated' ? ' / AI Images' : ''}{videoSource === 'veo' ? ' / Veo' : ''})</>
+                                                )}
+                                            </button>
+                                            {isGenerating && (
+                                                <div className="generation-progress">
+                                                    <div className="progress-steps">
+                                                        <span className="step active">🔊 Audio</span>
+                                                        <span className="step-arrow">→</span>
+                                                        <span className={`step ${generationStep.includes('rendering') ? 'active' : ''}`}>🎬 Video</span>
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
                                 </>
                             )}
                         </>

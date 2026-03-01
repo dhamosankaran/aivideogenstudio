@@ -10,6 +10,8 @@ alembic==1.14.0
 
 # AI/ML Providers
 google-generativeai==0.8.3
+google-genai>=1.0.0        # New SDK for Gemini image generation
+Pillow>=10.0.0             # Image handling for generated images
 openai==1.55.3
 anthropic==0.39.0
 openai-whisper==20250625  # Speech recognition (Whisper model)

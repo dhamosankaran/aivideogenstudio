@@ -15,6 +15,7 @@ from app.services.base_provider import (
 from app.providers.gemini import GeminiProvider
 from app.providers.openai_provider import OpenAILLMProvider, OpenAITTSProvider
 from app.providers.google_tts_provider import GoogleTTSProvider
+from app.providers.elevenlabs_provider import ElevenLabsTTSProvider
 from app.config import get_settings
 
 
@@ -32,7 +33,7 @@ class ProviderFactory:
     TTS_PROVIDERS = {
         TTSProvider.OPENAI: OpenAITTSProvider,
         TTSProvider.GOOGLE: GoogleTTSProvider,
-        # TTSProvider.ELEVENLABS: ElevenLabsTTSProvider,  # TODO: Implement
+        TTSProvider.ELEVENLABS: ElevenLabsTTSProvider,
     }
     
     @classmethod

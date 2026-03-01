@@ -79,11 +79,23 @@ class ArticleCreatedResponse(BaseModel):
     message: str
 
 
-class GenerateVideoRequest(BaseModel):
-    """Request to generate a video directly from a book."""
+class GenerateScriptRequest(BaseModel):
+    """Request to generate a script from a book (for preview before video)."""
     angle_index: int = 0
     custom_angle: Optional[str] = None
-    project_folder: Optional[str] = None  # New field for asset override
+
+
+class GenerateVideoRequest(BaseModel):
+    """Request to generate a video from a book."""
+    angle_index: int = 0
+    custom_angle: Optional[str] = None
+    project_folder: Optional[str] = None
+    script_id: Optional[int] = None       # If provided, skip script generation
+    tts_provider: Optional[str] = "openai" # openai, google, elevenlabs
+    voice: Optional[str] = None            # Voice ID (uses content-type default if None)
+    background_mode: Optional[str] = "auto"  # auto, images_only, videos_only, mixed
+    image_source: Optional[str] = "stock"  # stock, ai_generated, auto
+    video_source: Optional[str] = "stock"  # stock, veo
 
 
 def get_book_service(db: Session = Depends(get_db)) -> BookService:
@@ -127,6 +139,20 @@ async def select_book(
         return BookDetail.model_validate(book)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to select book: {str(e)}")
+
+
+@router.get("/voice-options")
+async def get_voice_options(
+    content_type: str = Query("book_review", description="Content type for voice recommendations")
+):
+    """
+    Get available TTS providers, voices, and recommendations for a content type.
+    
+    Returns provider list with cost labels, voice options per provider,
+    and the recommended default based on content type.
+    """
+    from app.voice_config import get_voice_options_for_frontend
+    return get_voice_options_for_frontend(content_type)
 
 
 @router.get("/{book_id}", response_model=BookDetail)
@@ -206,6 +232,65 @@ async def prepare_book_assets(
         raise HTTPException(status_code=500, detail=f"Asset preparation failed: {str(e)}")
 
 
+@router.post("/{book_id}/generate-script")
+async def generate_book_script(
+    book_id: int,
+    request: GenerateScriptRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Generate a script from a book for preview/review before video generation.
+    
+    Returns script details (scenes, title, word count, duration) so the user
+    can review and approve before committing to TTS + video render costs.
+    """
+    from app.services.script_service import ScriptService
+    from app.config import settings
+    
+    google_api_key = os.getenv("GOOGLE_BOOKS_API_KEY") or settings.google_api_key
+    book_service = BookService(db, google_books_api_key=google_api_key)
+    
+    try:
+        # Step 1: Create article from book
+        logger.info(f"[BookScript] Step 1: Creating article from book {book_id}")
+        article = await book_service.create_article_from_book(
+            book_id,
+            angle_index=request.angle_index,
+            custom_angle=request.custom_angle
+        )
+        logger.info(f"[BookScript] Article created: {article.id} - {article.title}")
+        
+        # Step 2: Generate script
+        logger.info(f"[BookScript] Step 2: Generating script for article {article.id}")
+        script_service = ScriptService(db)
+        script = await script_service.generate_script(
+            article=article,
+            style="engaging",
+            target_duration=85
+        )
+        logger.info(f"[BookScript] Script created: {script.id} ({script.word_count} words, ~{script.estimated_duration:.0f}s)")
+        
+        return {
+            "script_id": script.id,
+            "catchy_title": script.catchy_title,
+            "scenes": script.scenes,
+            "formatted_script": script.formatted_script,
+            "raw_script": script.raw_script,
+            "word_count": script.word_count,
+            "estimated_duration": script.estimated_duration,
+            "content_type": script.content_type,
+            "is_valid": script.is_valid,
+            "validation_errors": script.validation_errors,
+            "article_id": article.id,
+        }
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"[BookScript] Failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Script generation failed: {str(e)}")
+
+
 @router.post("/{book_id}/generate-video")
 async def generate_book_video(
     book_id: int,
@@ -214,10 +299,12 @@ async def generate_book_video(
     db: Session = Depends(get_db)
 ):
     """
-    One-click video generation from a book.
+    Generate video from a book.
     
-    Chains: Article → Script → TTS Audio → Video Render.
-    The video render runs in the background. Returns video_id for polling.
+    If script_id is provided, uses the existing (reviewed) script.
+    Otherwise, generates a new script (legacy one-click flow).
+    
+    Accepts tts_provider and voice for user-selected TTS configuration.
     """
     from app.services.script_service import ScriptService
     from app.services.audio_service import AudioService
@@ -226,55 +313,66 @@ async def generate_book_video(
     
     google_api_key = os.getenv("GOOGLE_BOOKS_API_KEY") or settings.google_api_key
     book_service = BookService(db, google_books_api_key=google_api_key)
+    script_service = ScriptService(db)
     
     try:
-        # Step 1: Create article from book (if not already created)
-        logger.info(f"[BookVideo] Step 1: Creating article from book {book_id}")
-        article = await book_service.create_article_from_book(
-            book_id,
-            angle_index=request.angle_index,
-            custom_angle=request.custom_angle
-        )
-        logger.info(f"[BookVideo] Article created: {article.id} - {article.title}")
+        if request.script_id:
+            # Use existing reviewed script
+            logger.info(f"[BookVideo] Using existing script {request.script_id}")
+            script = script_service.get_script(request.script_id)
+            if not script:
+                raise ValueError(f"Script {request.script_id} not found")
+            
+            # Approve the script
+            script = script_service.approve_script(script.id)
+            logger.info(f"[BookVideo] Script {script.id} approved")
+        else:
+            # Legacy one-click flow: create article + generate script
+            logger.info(f"[BookVideo] Step 1: Creating article from book {book_id}")
+            article = await book_service.create_article_from_book(
+                book_id,
+                angle_index=request.angle_index,
+                custom_angle=request.custom_angle
+            )
+            logger.info(f"[BookVideo] Article created: {article.id}")
+            
+            script = await script_service.generate_script(
+                article=article,
+                style="engaging",
+                target_duration=85
+            )
+            script = script_service.approve_script(script.id)
+            logger.info(f"[BookVideo] Script created and approved: {script.id}")
         
-        # Step 2: Generate script
-        logger.info(f"[BookVideo] Step 2: Generating script for article {article.id}")
-        script_service = ScriptService(db)
-        script = await script_service.generate_script(
-            article=article,
-            style="engaging",
-            target_duration=85  # Book reviews V2: 85s with 7-8 scenes
-        )
-        logger.info(f"[BookVideo] Script created: {script.id} (content_type={script.content_type})")
-        
-        # Step 3: Auto-approve the script
-        logger.info(f"[BookVideo] Step 3: Auto-approving script {script.id}")
-        script = script_service.approve_script(script.id)
-        
-        # Step 4: Generate TTS audio
-        logger.info(f"[BookVideo] Step 4: Generating TTS audio")
+        # Generate TTS audio with user-selected provider and voice
+        tts_provider = request.tts_provider or "openai"
+        logger.info(f"[BookVideo] Generating TTS audio (provider={tts_provider}, voice={request.voice})")
         audio_service = AudioService(db)
         audio = await audio_service.generate_audio_from_script(
             script_id=script.id,
-            tts_provider="openai"
+            tts_provider=tts_provider,
+            voice=request.voice
         )
         logger.info(f"[BookVideo] Audio generated: {audio.id}")
         
-        # Step 5: Create video task
-        logger.info(f"[BookVideo] Step 5: Creating video task")
+        # Create video task
+        logger.info(f"[BookVideo] Creating video task")
         video_service = EnhancedVideoCompositionService(db)
         video = video_service.create_video_task(
             script_id=script.id,
             audio_id=audio.id,
             background_style="scenes",
-            project_folder=request.project_folder  # Pass to video service
+            project_folder=request.project_folder,
+            background_mode=request.background_mode or "auto",
+            image_source=request.image_source or "stock",
+            video_source=request.video_source or "stock"
         )
         db.commit()
         db.refresh(video)
         logger.info(f"[BookVideo] Video task created: {video.id}")
         
-        # Step 6: Queue video render in background
-        logger.info(f"[BookVideo] Step 6: Queuing background render for video {video.id}")
+        # Queue video render in background
+        logger.info(f"[BookVideo] Queuing background render for video {video.id}")
         background_tasks.add_task(
             script_service.finalize_video_generation, video.id
         )
@@ -282,10 +380,11 @@ async def generate_book_video(
         return {
             "status": "processing",
             "book_id": book_id,
-            "article_id": article.id,
             "script_id": script.id,
             "video_id": video.id,
-            "message": "Book review video generation started! Script generated and video rendering in background."
+            "tts_provider": tts_provider,
+            "voice": audio.voice,
+            "message": "Book review video generation started! Video rendering in background."
         }
         
     except ValueError as e:
@@ -293,6 +392,7 @@ async def generate_book_video(
     except Exception as e:
         logger.error(f"[BookVideo] Failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Video generation failed: {str(e)}")
+
 
 
 @router.get("/", response_model=List[BookDetail])

@@ -6,11 +6,16 @@ Creates 4-second end screens with:
 - Content-type specific messaging
 - Channel branding
 - Professional design
+
+CTA / channel / footer configuration is driven by the central
+content_types registry.
 """
 
 import logging
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
+
+from app.content_types import CONTENT_TYPES, get_registry
 
 logger = logging.getLogger(__name__)
 
@@ -20,36 +25,7 @@ class EndScreenService:
     
     SCREEN_SIZE = (1080, 1920)  # Vertical video format
     OUTPUT_DIR = Path("assets/end_screens")
-    
-    # Content-type specific CTAs
-    CTA_MESSAGES = {
-        "daily_update": "Subscribe for Daily AI News!",
-        "big_tech": "Follow for In-Depth Analysis!",
-        "leader_quote": "Get Inspired Daily!",
-        "arxiv_paper": "Learn Cutting-Edge AI!",
-        "book_review": "Subscribe for Book Reviews!",
-        "youtube_import": "Subscribe for More Insights!"
-    }
-    
-    # Content-type to channel name mapping
-    CHANNEL_NAMES = {
-        "daily_update": "@AINewsDaily",
-        "big_tech": "@AINewsDaily",
-        "leader_quote": "@AINewsDaily",
-        "arxiv_paper": "@AINewsDaily",
-        "book_review": "@60SecondBooks",
-        "youtube_import": "@AINewsDaily",
-    }
-    
-    # Content-type specific footer messages
-    FOOTER_MESSAGES = {
-        "daily_update": "🔔 Turn on notifications!",
-        "big_tech": "🔔 Turn on notifications!",
-        "leader_quote": "💡 Daily Wisdom Awaits!",
-        "arxiv_paper": "🧠 Stay Ahead of AI Research!",
-        "book_review": "📚 More Book Summaries Weekly!",
-        "youtube_import": "🔔 Turn on notifications!",
-    }
+
     
     def __init__(self):
         self.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -73,7 +49,7 @@ class EndScreenService:
         """
         # Auto-select channel name based on content type if not explicitly provided
         if channel_name is None:
-            channel_name = self.CHANNEL_NAMES.get(content_type, "@AINewsDaily")
+            channel_name = get_registry(content_type)["channel"]
         
         logger.info(f"Generating end screen for {content_type} (channel: {channel_name})")
         
@@ -107,7 +83,7 @@ class EndScreenService:
         self._draw_centered_text(draw, 600, "Thanks for Watching!", font_large, 'white')
         
         # Add content-specific CTA
-        cta_text = self.CTA_MESSAGES.get(content_type, self.CTA_MESSAGES["daily_update"])
+        cta_text = get_registry(content_type)["cta"]
         self._draw_centered_text(draw, 750, cta_text, font_small, 'lightgray')
         
         # Add Subscribe button
@@ -120,7 +96,7 @@ class EndScreenService:
         self._draw_centered_text(draw, 1400, channel_name, font_small, 'gray')
         
         # Add content-type-specific footer text
-        footer_text = self.FOOTER_MESSAGES.get(content_type, "🔔 Turn on notifications!")
+        footer_text = get_registry(content_type)["footer"]
         self._draw_centered_text(draw, 1550, footer_text, font_small, 'darkgray')
         
         # Save
@@ -176,11 +152,11 @@ class EndScreenService:
 
 # Test function
 def test_end_screen():
-    """Test end screen generation."""
+    """Test end screen generation for ALL registered content types."""
     service = EndScreenService()
     
-    for content_type in ["daily_update", "big_tech", "leader_quote", "arxiv_paper"]:
-        path = service.generate_end_screen(content_type)
+    for content_type in CONTENT_TYPES:
+        path = service.generate_end_screen(content_type, force_regenerate=True)
         print(f"✅ Generated {content_type}: {path}")
 
 

@@ -196,7 +196,19 @@ def get_video_detail(
         "article": {
             "id": article.id,
             "title": article.title,
-            "url": article.url
+            "url": article.url,
+            "description": article.description,
+            # Book metadata (for book review context on validation page)
+            "book_source": {
+                "id": article.book_source.id,
+                "title": article.book_source.title,
+                "author": article.book_source.author,
+                "subjects": article.book_source.subjects,
+                "cover_url": article.book_source.cover_url,
+                "key_takeaways": article.book_source.key_takeaways,
+                "suggested_angles": article.book_source.suggested_angles,
+                "first_publish_year": article.book_source.first_publish_year,
+            } if article.book_source_id and article.book_source else None
         } if article else None
     }
 

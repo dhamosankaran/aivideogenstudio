@@ -1,49 +1,114 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAppNavigate } from '../context/ProjectContext';
 import {
     analyzeYouTubeVideo,
     getYouTubeSources,
     getYouTubeSource,
-    createShortFromInsight,
     getVideoSummary,
+    getVideoInfo,
+    downloadVideo,
+    getTranscript,
+    getMusicLibrary,
+    editorGenerate,
+    generateScript,
+    approveAndRender,
     generateModeA,
     generateModeB,
     trimAndGenerate
 } from '../services/youtubeApi';
 import './YouTubeImport.css';
 
+// ── Wizard Step Constants ──────────────────────────────────────
+const STEPS = {
+    URL_INPUT: 0,
+    VIDEO_OVERVIEW: 1,
+    EDITOR: 2,
+    MUSIC_CAPTIONS: 3,
+    GENERATE: 4,
+};
+
+const STEP_LABELS = [
+    'Import',
+    'Overview',
+    'Editor',
+    'Audio & Captions',
+    'Generate',
+];
+
+// ── Platform Icons ─────────────────────────────────────────────
+const PLATFORM_ICONS = {
+    youtube: '🔴',
+    twitter: '🐦',
+    linkedin: '💼',
+    unknown: '🔗',
+};
+
 function YouTubeImport() {
     const { navigateTo } = useAppNavigate();
 
-    // State
-    const [youtubeUrl, setYoutubeUrl] = useState('');
+    // ── Wizard state ───────────────────────────────────────────
+    const [currentStep, setCurrentStep] = useState(STEPS.URL_INPUT);
+
+    // ── Step 1: URL Input state ────────────────────────────────
+    const [videoUrl, setVideoUrl] = useState('');
+    const [detectedPlatform, setDetectedPlatform] = useState(null);
+    const [isDownloading, setIsDownloading] = useState(false);
     const [isAnalyzing, setIsAnalyzing] = useState(false);
     const [sources, setSources] = useState([]);
+
+    // ── Step 2: Overview state ─────────────────────────────────
     const [selectedSource, setSelectedSource] = useState(null);
-    const [selectedInsights, setSelectedInsights] = useState(new Set());
+    const [videoSummary, setVideoSummary] = useState(null);
+    const [isLoadingSummary, setIsLoadingSummary] = useState(false);
+    const [transcript, setTranscript] = useState(null);
+    const [isLoadingTranscript, setIsLoadingTranscript] = useState(false);
+
+    // ── Step 3: Editor state ───────────────────────────────────
+    const [trimStart, setTrimStart] = useState(0);
+    const [trimEnd, setTrimEnd] = useState(60);
+    const [stripAudio, setStripAudio] = useState(true);
+
+    // ── Step 4: Music & Captions state ─────────────────────────
+    const [musicLibrary, setMusicLibrary] = useState([]);
+    const [selectedMusic, setSelectedMusic] = useState(null);
+    const [musicVolume, setMusicVolume] = useState(0.12);
+    const [captionSource, setCaptionSource] = useState('transcript');
+
+    // ── Step 5: Generate state ─────────────────────────────────
+    const [commentaryStyle, setCommentaryStyle] = useState('reaction');
+    const [contentType, setContentType] = useState('youtube_import');
+    const [isGenerating, setIsGenerating] = useState(false);
+    const [isApproving, setIsApproving] = useState(false);
+    const [generationResult, setGenerationResult] = useState(null);
+    const [scriptPreview, setScriptPreview] = useState(null);
+
+    // ── Shared state ───────────────────────────────────────────
     const [error, setError] = useState(null);
     const [successMessage, setSuccessMessage] = useState(null);
     const [pollingId, setPollingId] = useState(null);
 
-    // New state for enhanced features
-    const [showSummaryModal, setShowSummaryModal] = useState(false);
-    const [videoSummary, setVideoSummary] = useState(null);
-    const [isLoadingSummary, setIsLoadingSummary] = useState(false);
-    const [generatingInsight, setGeneratingInsight] = useState(null); // {index, mode}
-    const [trimTimes, setTrimTimes] = useState({}); // { [insightIndex]: { start, end, expanded } }
-    const [generationProgress, setGenerationProgress] = useState({});
+    // ── Refs ────────────────────────────────────────────────────
+    const timelineRef = useRef(null);
+    const playerRef = useRef(null);
+    const seekTimerRef = useRef(null);
 
-    // Load existing sources on mount
-    useEffect(() => {
-        loadSources();
-    }, []);
+    // ── Effects ────────────────────────────────────────────────
+    useEffect(() => { loadSources(); }, []);
+    useEffect(() => () => { if (pollingId) clearInterval(pollingId); }, [pollingId]);
 
-    // Cleanup polling on unmount
+    // Auto-detect platform as user types URL
     useEffect(() => {
-        return () => {
-            if (pollingId) clearInterval(pollingId);
-        };
-    }, [pollingId]);
+        if (!videoUrl.trim()) {
+            setDetectedPlatform(null);
+            return;
+        }
+        if (/youtube\.com|youtu\.be/i.test(videoUrl)) setDetectedPlatform('youtube');
+        else if (/twitter\.com|x\.com/i.test(videoUrl)) setDetectedPlatform('twitter');
+        else if (/linkedin\.com/i.test(videoUrl)) setDetectedPlatform('linkedin');
+        else setDetectedPlatform('unknown');
+    }, [videoUrl]);
+
+    // ── Data loaders ───────────────────────────────────────────
 
     const loadSources = async () => {
         try {
@@ -54,202 +119,314 @@ function YouTubeImport() {
         }
     };
 
-    const handleAnalyze = async () => {
-        if (!youtubeUrl.trim()) {
-            setError('Please enter a YouTube URL');
+    const loadTranscript = useCallback(async (sourceId) => {
+        setIsLoadingTranscript(true);
+        try {
+            const data = await getTranscript(sourceId);
+            setTranscript(data);
+        } catch (err) {
+            console.error('Transcript load failed:', err);
+            setTranscript(null);
+        } finally {
+            setIsLoadingTranscript(false);
+        }
+    }, []);
+
+    const loadSummary = useCallback(async (sourceId) => {
+        setIsLoadingSummary(true);
+        try {
+            const data = await getVideoSummary(sourceId);
+            setVideoSummary(data);
+        } catch (err) {
+            console.error('Summary load failed:', err);
+        } finally {
+            setIsLoadingSummary(false);
+        }
+    }, []);
+
+    const loadMusicLibrary = useCallback(async () => {
+        try {
+            const data = await getMusicLibrary();
+            setMusicLibrary(data.tracks || []);
+            if (data.tracks?.length > 0 && !selectedMusic) {
+                setSelectedMusic(data.tracks[0].filename);
+            }
+        } catch (err) {
+            console.error('Music library load failed:', err);
+        }
+    }, [selectedMusic]);
+
+    // ── Polling ────────────────────────────────────────────────
+
+    const startPolling = (sourceId) => {
+        if (pollingId) clearInterval(pollingId);
+        const id = setInterval(async () => {
+            try {
+                const source = await getYouTubeSource(sourceId);
+                setSelectedSource(source);
+                if (source.analysis_status === 'completed' || source.analysis_status === 'failed') {
+                    clearInterval(id);
+                    setPollingId(null);
+                    loadSources();
+                    if (source.analysis_status === 'completed') {
+                        setTrimEnd(Math.min(source.duration_seconds || 60, 60));
+                        // Auto-load summary and transcript when analysis completes
+                        loadSummary(source.id);
+                        loadTranscript(source.id);
+                    }
+                }
+            } catch (err) {
+                clearInterval(id);
+                setPollingId(null);
+            }
+        }, 2000);
+        setPollingId(id);
+    };
+
+    // ── Step 1 Handlers ────────────────────────────────────────
+
+    const handleAnalyzeAndDownload = async () => {
+        if (!videoUrl.trim()) {
+            setError('Please enter a video URL');
             return;
         }
-
+        setIsDownloading(true);
         setIsAnalyzing(true);
         setError(null);
         setSuccessMessage(null);
 
         try {
-            const source = await analyzeYouTubeVideo(youtubeUrl);
+            // Step A: Try to analyze (creates source + extracts transcript + insights)
+            const source = await analyzeYouTubeVideo(videoUrl);
             setSelectedSource(source);
-            setYoutubeUrl('');
 
-            // Start polling for analysis completion
+            // Download in parallel (background task on backend handles transcript)
+            try {
+                await downloadVideo(videoUrl, false);
+            } catch (dlErr) {
+                console.warn('Download step skipped:', dlErr.message);
+            }
+
+            setVideoUrl('');
             startPolling(source.id);
-
+            setCurrentStep(STEPS.VIDEO_OVERVIEW);
+            setSuccessMessage('Video imported! Analyzing...');
         } catch (err) {
             setError(err.message);
         } finally {
+            setIsDownloading(false);
             setIsAnalyzing(false);
         }
     };
 
-    const startPolling = (sourceId) => {
-        // Clear any existing polling
-        if (pollingId) clearInterval(pollingId);
+    const handleQuickDownload = async () => {
+        if (!videoUrl.trim()) {
+            setError('Please enter a video URL');
+            return;
+        }
+        setIsDownloading(true);
+        setError(null);
 
-        const id = setInterval(async () => {
-            try {
-                const source = await getYouTubeSource(sourceId);
+        try {
+            const result = await downloadVideo(videoUrl, false);
+            setSuccessMessage(`Downloaded from ${result.platform}!`);
+            if (result.source_id) {
+                const source = await getYouTubeSource(result.source_id);
                 setSelectedSource(source);
-
-                // Stop polling when analysis is complete
-                if (source.analysis_status === 'completed' || source.analysis_status === 'failed') {
-                    clearInterval(id);
-                    setPollingId(null);
-                    loadSources(); // Refresh the source list
-                }
-            } catch (err) {
-                console.error('Polling error:', err);
-                clearInterval(id);
-                setPollingId(null);
+                setTrimEnd(Math.min(source.duration_seconds || 60, 60));
+                setCurrentStep(STEPS.VIDEO_OVERVIEW);
+                // Load transcript/summary for quick-downloaded source
+                loadTranscript(source.id);
+                loadSummary(source.id);
             }
-        }, 2000);
-
-        setPollingId(id);
+            setVideoUrl('');
+            loadSources();
+        } catch (err) {
+            setError(err.message);
+        } finally {
+            setIsDownloading(false);
+        }
     };
 
     const handleSelectSource = async (source) => {
         try {
             const fullSource = await getYouTubeSource(source.id);
             setSelectedSource(fullSource);
-            setSelectedInsights(new Set());
+            setTrimStart(0);
+            setTrimEnd(Math.min(fullSource.duration_seconds || 60, 60));
+            setCurrentStep(STEPS.VIDEO_OVERVIEW);
 
-            // Resume polling if still analyzing
             if (fullSource.analysis_status === 'analyzing') {
                 startPolling(fullSource.id);
+            } else if (fullSource.analysis_status === 'completed' || fullSource.analysis_status === 'transcript_ready') {
+                // Source already analyzed — load data immediately
+                loadSummary(fullSource.id);
+                loadTranscript(fullSource.id);
             }
         } catch (err) {
             setError(err.message);
         }
     };
 
-    const handleToggleInsight = (index) => {
-        const newSelected = new Set(selectedInsights);
-        if (newSelected.has(index)) {
-            newSelected.delete(index);
+    // ── Step navigation ────────────────────────────────────────
+
+    const goToStep = (step) => {
+        if (step === STEPS.VIDEO_OVERVIEW && selectedSource) {
+            loadTranscript(selectedSource.id);
+            loadSummary(selectedSource.id);
+        }
+        if (step === STEPS.MUSIC_CAPTIONS) {
+            loadMusicLibrary();
+        }
+        setCurrentStep(step);
+    };
+
+    const canProceed = () => {
+        switch (currentStep) {
+            case STEPS.URL_INPUT: return !!selectedSource;
+            case STEPS.VIDEO_OVERVIEW: return !!selectedSource;
+            case STEPS.EDITOR: return trimStart < trimEnd;
+            case STEPS.MUSIC_CAPTIONS: return true;
+            case STEPS.GENERATE: return false;
+            default: return false;
+        }
+    };
+
+    // ── Step 5: Generate Script → Review → Render ──────────────
+
+    const handleGenerateScript = async () => {
+        if (!selectedSource) return;
+        setIsGenerating(true);
+        setError(null);
+        setScriptPreview(null);
+
+        try {
+            const result = await generateScript(selectedSource.id, {
+                trimStart,
+                trimEnd,
+                stripAudio,
+                musicTrack: selectedMusic,
+                musicVolume,
+                generateCaptions: captionSource !== 'none',
+                captionSource,
+                commentaryStyle,
+                contentType,
+            });
+
+            setGenerationResult(result);
+
+            // Store script preview data
+            setScriptPreview({
+                script_preview: result.script_preview,
+                catchy_title: result.catchy_title,
+                scenes: result.scenes,
+                script_id: result.script_id,
+                article_id: result.article_id,
+            });
+        } catch (err) {
+            setError(err.message);
+        } finally {
+            setIsGenerating(false);
+        }
+    };
+
+    const handleApproveAndRender = async () => {
+        if (!scriptPreview?.script_id) return;
+        setIsApproving(true);
+        setError(null);
+
+        try {
+            const result = await approveAndRender(scriptPreview.script_id, {
+                trimStart,
+                trimEnd,
+                stripAudio,
+                musicTrack: selectedMusic,
+                musicVolume,
+            });
+            setGenerationResult(result);
+            setSuccessMessage(result.message || 'Video rendering started!');
+
+            if (result.redirect_to) {
+                setTimeout(() => navigateTo(result.redirect_to.replace('/', '')), 2500);
+            }
+        } catch (err) {
+            setError(err.message);
+        } finally {
+            setIsApproving(false);
+        }
+    };
+
+    // ── YouTube IFrame API (for Editor step) ───────────────────
+
+    useEffect(() => {
+        if (currentStep !== STEPS.EDITOR || !selectedSource?.youtube_video_id) return;
+
+        // Load YouTube IFrame API if not already loaded
+        if (!window.YT) {
+            const tag = document.createElement('script');
+            tag.src = 'https://www.youtube.com/iframe_api';
+            document.body.appendChild(tag);
+        }
+
+        const initPlayer = () => {
+            const container = document.getElementById('yt-editor-player');
+            if (!container) return;
+
+            // Destroy previous player if exists
+            if (playerRef.current && playerRef.current.destroy) {
+                try { playerRef.current.destroy(); } catch (e) { /* ignore */ }
+            }
+
+            playerRef.current = new window.YT.Player('yt-editor-player', {
+                videoId: selectedSource.youtube_video_id,
+                playerVars: {
+                    start: Math.floor(trimStart),
+                    rel: 0,
+                    modestbranding: 1,
+                    playsinline: 1,
+                },
+                events: {
+                    onReady: (event) => {
+                        event.target.seekTo(Math.floor(trimStart), true);
+                    },
+                },
+            });
+        };
+
+        if (window.YT && window.YT.Player) {
+            // Small delay to ensure DOM element is rendered
+            setTimeout(initPlayer, 100);
         } else {
-            newSelected.add(index);
+            window.onYouTubeIframeAPIReady = initPlayer;
         }
-        setSelectedInsights(newSelected);
-    };
 
-    const handleCreateShort = async (insightIndex, mode) => {
-        if (!selectedSource) return;
-
-        try {
-            const result = await createShortFromInsight(selectedSource.id, insightIndex, mode);
-            setSuccessMessage(`Created ${mode === 'A' ? 'Clip + Commentary' : 'Original'} article! Redirecting...`);
-
-            // Navigate to content library after short delay
-            setTimeout(() => {
-                navigateTo('content');
-            }, 1500);
-
-        } catch (err) {
-            setError(err.message);
-        }
-    };
-
-    // New handlers for Mode A and Mode B
-    const handleViewSummary = async () => {
-        if (!selectedSource) return;
-
-        setIsLoadingSummary(true);
-        setShowSummaryModal(true);
-
-        try {
-            const data = await getVideoSummary(selectedSource.id);
-            setVideoSummary(data);
-        } catch (err) {
-            setError(err.message);
-            setShowSummaryModal(false);
-        } finally {
-            setIsLoadingSummary(false);
-        }
-    };
-
-    const handleModeA = async (insightIndex) => {
-        if (!selectedSource) return;
-
-        setGeneratingInsight({ index: insightIndex, mode: 'A' });
-        setGenerationProgress({ [insightIndex]: 'downloading' });
-
-        try {
-            setGenerationProgress({ [insightIndex]: 'generating script' });
-            const result = await generateModeA(selectedSource.id, insightIndex, {
-                commentaryStyle: 'reaction',
-                autoApprove: true
-            });
-
-            setGenerationProgress({ [insightIndex]: 'rendering video' });
-            setSuccessMessage('Mode A video started! Redirecting to validation...');
-
-            setTimeout(() => {
-                navigateTo('validation');
-            }, 1500);
-
-        } catch (err) {
-            setError(err.message);
-        } finally {
-            setGeneratingInsight(null);
-            setGenerationProgress({});
-        }
-    };
-
-    const handleModeB = async (insightIndex) => {
-        if (!selectedSource) return;
-
-        setGeneratingInsight({ index: insightIndex, mode: 'B' });
-
-        try {
-            const result = await generateModeB(selectedSource.id, insightIndex, {
-                contentType: 'daily_update'
-            });
-
-            setSuccessMessage('Script created! Redirecting to Script Review...');
-
-            setTimeout(() => {
-                navigateTo('scripts');
-            }, 1500);
-
-        } catch (err) {
-            setError(err.message);
-        } finally {
-            setGeneratingInsight(null);
-        }
-    };
-
-    const handleDownloadSummary = () => {
-        if (!videoSummary) return;
-
-        const title = videoSummary.title || 'Video Summary';
-        const channel = videoSummary.channel_name ? `by ${videoSummary.channel_name}` : '';
-        const content = `# ${title}\n${channel}\n\n${videoSummary.video_summary}`;
-
-        const blob = new Blob([content], { type: 'text/markdown' });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `${title.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 50)}_summary.md`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
-    };
-
-    const handleCreateBulkShorts = async (mode) => {
-        if (!selectedSource || selectedInsights.size === 0) return;
-
-        try {
-            for (const index of selectedInsights) {
-                await createShortFromInsight(selectedSource.id, index, mode);
+        return () => {
+            if (playerRef.current && playerRef.current.destroy) {
+                try { playerRef.current.destroy(); } catch (e) { /* ignore */ }
+                playerRef.current = null;
             }
-            setSuccessMessage(`Created ${selectedInsights.size} articles! Redirecting...`);
+        };
+    }, [currentStep, selectedSource?.youtube_video_id]);
 
-            setTimeout(() => {
-                navigateTo('content');
-            }, 1500);
+    // Debounced seek when sliders change
+    useEffect(() => {
+        if (currentStep !== STEPS.EDITOR) return;
+        if (!playerRef.current || !playerRef.current.seekTo) return;
 
-        } catch (err) {
-            setError(err.message);
-        }
-    };
+        // Debounce: wait 400ms after slider stops moving before seeking
+        if (seekTimerRef.current) clearTimeout(seekTimerRef.current);
+        seekTimerRef.current = setTimeout(() => {
+            try {
+                playerRef.current.seekTo(Math.floor(trimStart), true);
+            } catch (e) { /* player might not be ready */ }
+        }, 400);
+
+        return () => {
+            if (seekTimerRef.current) clearTimeout(seekTimerRef.current);
+        };
+    }, [trimStart, currentStep]);
+
+    // ── Helpers ─────────────────────────────────────────────────
 
     const formatDuration = (seconds) => {
         if (!seconds) return '--:--';
@@ -258,392 +435,651 @@ function YouTubeImport() {
         return `${mins}:${secs.toString().padStart(2, '0')}`;
     };
 
-    const getViralScoreClass = (score) => {
-        if (score >= 8) return 'score-high';
-        if (score >= 5) return 'score-medium';
-        return 'score-low';
+    const formatTimestamp = (seconds) => {
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.floor(seconds % 60);
+        return `${mins}:${secs.toString().padStart(2, '0')}`;
     };
 
-    const getEngagementIcon = (type) => {
-        const icons = {
-            educational: '📚',
-            controversial: '🔥',
-            emotional: '💫',
-            surprising: '😲',
-            practical: '⚡'
-        };
-        return icons[type] || '💡';
-    };
+    // ── Render ──────────────────────────────────────────────────
 
     return (
-        <div className="youtube-import">
-            {/* Header */}
-            <div className="yt-header">
-                <div className="yt-header-icon">🎬</div>
-                <div className="yt-header-content">
-                    <h1>YouTube Transcript Analyzer</h1>
-                    <p>Extract insights from any YouTube video and create viral Shorts</p>
-                </div>
-            </div>
-
-            {/* URL Input */}
-            <div className="yt-input-section">
-                <div className="yt-input-wrapper">
-                    <input
-                        type="text"
-                        placeholder="Paste YouTube URL here..."
-                        value={youtubeUrl}
-                        onChange={(e) => setYoutubeUrl(e.target.value)}
-                        onKeyPress={(e) => e.key === 'Enter' && handleAnalyze()}
-                        className="yt-url-input"
-                    />
-                    <button
-                        onClick={handleAnalyze}
-                        disabled={isAnalyzing}
-                        className="yt-analyze-btn"
+        <div className="youtube-import wizard-mode">
+            {/* Progress Steps */}
+            <div className="wizard-steps">
+                {STEP_LABELS.map((label, idx) => (
+                    <div
+                        key={idx}
+                        className={`wizard-step ${idx === currentStep ? 'active' : ''} ${idx < currentStep ? 'completed' : ''}`}
+                        onClick={() => idx <= currentStep && goToStep(idx)}
                     >
-                        {isAnalyzing ? (
-                            <span className="loading-spinner"></span>
-                        ) : (
-                            <>🔍 Analyze</>
-                        )}
-                    </button>
-                </div>
-
-                {error && <div className="yt-error">{error}</div>}
-                {successMessage && <div className="yt-success">{successMessage}</div>}
+                        <div className="step-number">
+                            {idx < currentStep ? '✓' : idx + 1}
+                        </div>
+                        <div className="step-label">{label}</div>
+                    </div>
+                ))}
             </div>
 
-            {/* Main Content */}
-            <div className="yt-main-content">
-                {/* Previously Analyzed Videos */}
-                <div className="yt-sidebar">
-                    <h3>📹 Recent Analyses</h3>
-                    <div className="yt-source-list">
-                        {sources.map(source => (
-                            <div
-                                key={source.id}
-                                className={`yt-source-card ${selectedSource?.id === source.id ? 'active' : ''}`}
-                                onClick={() => handleSelectSource(source)}
+            {/* Error / Success */}
+            {error && <div className="yt-error">{error} <button className="dismiss-btn" onClick={() => setError(null)}>×</button></div>}
+            {successMessage && <div className="yt-success">{successMessage} <button className="dismiss-btn" onClick={() => setSuccessMessage(null)}>×</button></div>}
+
+            {/* === STEP 1: URL INPUT === */}
+            {currentStep === STEPS.URL_INPUT && (
+                <div className="wizard-panel step-url-input">
+                    <div className="wizard-panel-header">
+                        <div className="yt-header-icon">🎬</div>
+                        <div>
+                            <h2>Import Video</h2>
+                            <p>Paste a URL from YouTube, X/Twitter, or LinkedIn</p>
+                        </div>
+                    </div>
+
+                    <div className="yt-input-section">
+                        <div className="yt-input-wrapper">
+                            {detectedPlatform && (
+                                <span className="platform-badge" title={detectedPlatform}>
+                                    {PLATFORM_ICONS[detectedPlatform] || '🔗'}
+                                </span>
+                            )}
+                            <input
+                                type="text"
+                                placeholder="Paste video URL here..."
+                                value={videoUrl}
+                                onChange={(e) => setVideoUrl(e.target.value)}
+                                onKeyDown={(e) => e.key === 'Enter' && handleAnalyzeAndDownload()}
+                                className="yt-url-input"
+                            />
+                        </div>
+                        <div className="url-actions">
+                            <button
+                                onClick={handleAnalyzeAndDownload}
+                                disabled={isAnalyzing || isDownloading}
+                                className="yt-analyze-btn primary"
                             >
-                                <img
-                                    src={source.thumbnail_url || '/placeholder-thumb.png'}
-                                    alt=""
-                                    className="yt-source-thumb"
-                                />
-                                <div className="yt-source-info">
-                                    <div className="yt-source-title">{source.title || 'Untitled Video'}</div>
-                                    <div className="yt-source-meta">
-                                        <span className={`status-badge ${source.analysis_status}`}>
-                                            {source.analysis_status}
-                                        </span>
-                                        {source.insights_count > 0 && (
-                                            <span className="insight-count">{source.insights_count} insights</span>
-                                        )}
+                                {isAnalyzing ? <span className="loading-spinner" /> : <>🔍 Analyze & Import</>}
+                            </button>
+                            <button
+                                onClick={handleQuickDownload}
+                                disabled={isDownloading}
+                                className="yt-analyze-btn secondary"
+                                title="Download video without full analysis"
+                            >
+                                {isDownloading ? <span className="loading-spinner" /> : <>⬇️ Quick Download</>}
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Recent imports sidebar */}
+                    <div className="recent-imports">
+                        <h3>📹 Recent Imports</h3>
+                        <div className="yt-source-list">
+                            {sources.map(source => (
+                                <div
+                                    key={source.id}
+                                    className={`yt-source-card ${selectedSource?.id === source.id ? 'active' : ''}`}
+                                    onClick={() => handleSelectSource(source)}
+                                >
+                                    <img
+                                        src={source.thumbnail_url || '/placeholder-thumb.png'}
+                                        alt=""
+                                        className="yt-source-thumb"
+                                    />
+                                    <div className="yt-source-info">
+                                        <div className="yt-source-title">{source.title || 'Untitled Video'}</div>
+                                        <div className="yt-source-meta">
+                                            <span className={`status-badge ${source.analysis_status}`}>
+                                                {source.analysis_status}
+                                            </span>
+                                            {source.insights_count > 0 && (
+                                                <span className="insight-count">{source.insights_count} insights</span>
+                                            )}
+                                        </div>
                                     </div>
                                 </div>
-                            </div>
-                        ))}
-                        {sources.length === 0 && (
-                            <div className="yt-empty-state">
-                                No videos analyzed yet. Paste a URL above to get started!
-                            </div>
-                        )}
+                            ))}
+                            {sources.length === 0 && (
+                                <div className="yt-empty-state">
+                                    No videos imported yet. Paste a URL above to get started!
+                                </div>
+                            )}
+                        </div>
                     </div>
                 </div>
+            )}
 
-                {/* Insights Panel */}
-                <div className="yt-insights-panel">
-                    {selectedSource ? (
-                        <>
-                            {/* Video Info Header */}
-                            <div className="yt-video-header">
-                                <img
-                                    src={selectedSource.thumbnail_url}
-                                    alt=""
-                                    className="yt-video-thumb"
+            {/* === STEP 2: VIDEO OVERVIEW === */}
+            {currentStep === STEPS.VIDEO_OVERVIEW && selectedSource && (
+                <div className="wizard-panel step-overview">
+                    {/* Video header with embedded player */}
+                    <div className="yt-video-header">
+                        {selectedSource.youtube_video_id ? (
+                            <div className="video-player-wrapper">
+                                <iframe
+                                    src={`https://www.youtube.com/embed/${selectedSource.youtube_video_id}?rel=0&modestbranding=1`}
+                                    title={selectedSource.title || 'Video'}
+                                    frameBorder="0"
+                                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                                    allowFullScreen
+                                    className="video-player-iframe"
                                 />
-                                <div className="yt-video-info">
-                                    <h2>{selectedSource.title || 'Analyzing Video...'}</h2>
-                                    <div className="yt-video-meta">
-                                        {selectedSource.channel_name && (
-                                            <span className="channel-name">👤 {selectedSource.channel_name}</span>
-                                        )}
-                                        <span className="duration">⏱️ {formatDuration(selectedSource.duration_seconds)}</span>
-                                        <span className={`status-badge ${selectedSource.analysis_status}`}>
-                                            {selectedSource.analysis_status === 'analyzing' && '⏳ '}
-                                            {selectedSource.analysis_status}
-                                        </span>
+                            </div>
+                        ) : (
+                            <img
+                                src={selectedSource.thumbnail_url}
+                                alt=""
+                                className="yt-video-thumb"
+                            />
+                        )}
+                        <div className="yt-video-info">
+                            <h2>{selectedSource.title || 'Analyzing...'}</h2>
+                            <div className="yt-video-meta">
+                                {selectedSource.channel_name && (
+                                    <span className="channel-name">👤 {selectedSource.channel_name}</span>
+                                )}
+                                <span className="duration">⏱️ {formatDuration(selectedSource.duration_seconds)}</span>
+                                <span className={`status-badge ${selectedSource.analysis_status}`}>
+                                    {selectedSource.analysis_status === 'analyzing' && '⏳ '}
+                                    {selectedSource.analysis_status}
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Analyzing state */}
+                    {selectedSource.analysis_status === 'analyzing' && (
+                        <div className="yt-analyzing-state">
+                            <div className="analyzing-animation">
+                                <div className="brain-icon">🧠</div>
+                                <div className="analyzing-text">AI is extracting transcript & finding insights...</div>
+                                <div className="analyzing-subtext">This usually takes 15-30 seconds</div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Two-column: Summary + Transcript */}
+                    {(selectedSource.analysis_status === 'completed' || selectedSource.analysis_status === 'downloaded' || selectedSource.analysis_status === 'transcript_ready') && (
+                        <div className="overview-columns">
+                            {/* Summary Panel */}
+                            <div className="overview-panel summary-panel">
+                                <h3>📋 AI Summary</h3>
+                                {isLoadingSummary ? (
+                                    <div className="panel-loading"><span className="loading-spinner" /> Generating...</div>
+                                ) : videoSummary ? (
+                                    <div className="summary-text-block">
+                                        {videoSummary.video_summary}
                                     </div>
-                                    {selectedSource.analysis_status === 'completed' && (
-                                        <button
-                                            className="view-summary-btn"
-                                            onClick={handleViewSummary}
-                                            disabled={isLoadingSummary}
-                                        >
-                                            {isLoadingSummary ? '⏳ Loading...' : '📋 View Full Summary'}
-                                        </button>
-                                    )}
-                                </div>
+                                ) : (
+                                    <div className="panel-empty">Summary will be available after analysis completes.</div>
+                                )}
                             </div>
 
-                            {/* Loading State */}
-                            {selectedSource.analysis_status === 'analyzing' && (
-                                <div className="yt-analyzing-state">
-                                    <div className="analyzing-animation">
-                                        <div className="brain-icon">🧠</div>
-                                        <div className="analyzing-text">AI is finding key insights...</div>
-                                        <div className="analyzing-subtext">This usually takes 15-30 seconds</div>
-                                    </div>
-                                </div>
-                            )}
-
-                            {/* Error State */}
-                            {selectedSource.analysis_status === 'failed' && (
-                                <div className="yt-error-state">
-                                    <div className="error-icon">❌</div>
-                                    <div className="error-text">Analysis Failed</div>
-                                    <div className="error-detail">{selectedSource.error_message}</div>
-                                </div>
-                            )}
-
-                            {/* Insights List */}
-                            {selectedSource.analysis_status === 'completed' && selectedSource.insights && (
-                                <>
-                                    <div className="yt-insights-header">
-                                        <h3>🎯 Key Insights Found: {selectedSource.insights.length}</h3>
-                                        <p>Select insights and choose how to create Shorts</p>
-                                    </div>
-
-                                    <div className="yt-insights-list">
-                                        {selectedSource.insights.map((insight, index) => (
+                            {/* Transcript Panel */}
+                            <div className="overview-panel transcript-panel">
+                                <h3>📝 Transcript</h3>
+                                {isLoadingTranscript ? (
+                                    <div className="panel-loading"><span className="loading-spinner" /> Loading...</div>
+                                ) : transcript && transcript.segments?.length > 0 ? (
+                                    <div className="transcript-scroll">
+                                        {transcript.segments.map((seg, i) => (
                                             <div
-                                                key={index}
-                                                className={`yt-insight-card ${selectedInsights.has(index) ? 'selected' : ''}`}
+                                                key={i}
+                                                className="transcript-segment"
+                                                onClick={() => {
+                                                    setTrimStart(Math.floor(seg.start));
+                                                    setTrimEnd(Math.min(Math.ceil(seg.end), selectedSource.duration_seconds || 60));
+                                                }}
+                                                title="Click to set trim range"
                                             >
-                                                <div className="insight-header">
-                                                    <label className="insight-checkbox">
-                                                        <input
-                                                            type="checkbox"
-                                                            checked={selectedInsights.has(index)}
-                                                            onChange={() => handleToggleInsight(index)}
-                                                        />
-                                                        <span className="checkmark"></span>
-                                                    </label>
-
-                                                    <div className="insight-time">
-                                                        [{insight.formatted_time} - {insight.formatted_end_time}]
-                                                    </div>
-
-                                                    <div className={`viral-score ${getViralScoreClass(insight.viral_score)}`}>
-                                                        ⭐ {insight.viral_score}/10
-                                                    </div>
-
-                                                    <span className="engagement-type">
-                                                        {getEngagementIcon(insight.engagement_type)} {insight.engagement_type}
-                                                    </span>
-                                                </div>
-
-                                                <div className="insight-content">
-                                                    <div className="insight-summary">{insight.summary}</div>
-                                                    <div className="insight-hook">
-                                                        <span className="hook-label">Hook:</span>
-                                                        "{insight.hook}"
-                                                    </div>
-
-                                                    {insight.key_points && insight.key_points.length > 0 && (
-                                                        <div className="insight-points">
-                                                            {insight.key_points.slice(0, 2).map((point, i) => (
-                                                                <span key={i} className="key-point">• {point}</span>
-                                                            ))}
-                                                        </div>
-                                                    )}
-                                                </div>
-
-                                                <div className="insight-actions">
-                                                    {generatingInsight?.index === index ? (
-                                                        <div className="generation-progress">
-                                                            <span className="progress-spinner"></span>
-                                                            <span className="progress-text">
-                                                                {generationProgress[index] || 'Processing...'}
-                                                            </span>
-                                                        </div>
-                                                    ) : (
-                                                        <>
-                                                            <button
-                                                                className="mode-btn mode-a"
-                                                                onClick={() => handleModeA(index)}
-                                                                disabled={generatingInsight !== null}
-                                                                title="Extract clip, add commentary, auto-generate video"
-                                                            >
-                                                                🎬 React to Clip
-                                                            </button>
-                                                            <button
-                                                                className="mode-btn mode-b"
-                                                                onClick={() => handleModeB(index)}
-                                                                disabled={generatingInsight !== null}
-                                                                title="Create original content, go to Script Review"
-                                                            >
-                                                                ✍️ Write Original
-                                                            </button>
-                                                            <button
-                                                                className="mode-btn trim-btn"
-                                                                onClick={() => setTrimTimes(prev => ({
-                                                                    ...prev,
-                                                                    [index]: {
-                                                                        start: prev[index]?.start ?? Math.floor(insight.start_time),
-                                                                        end: prev[index]?.end ?? Math.floor(insight.end_time || insight.start_time + (insight.duration || 30)),
-                                                                        expanded: !prev[index]?.expanded
-                                                                    }
-                                                                }))}
-                                                                disabled={generatingInsight !== null}
-                                                                title="Trim to custom times and generate video"
-                                                            >
-                                                                ✂️ Trim & Create
-                                                            </button>
-                                                        </>
-                                                    )}
-
-                                                    {/* Trim Controls (expandable) */}
-                                                    {trimTimes[index]?.expanded && (
-                                                        <div className="trim-controls">
-                                                            <div className="trim-inputs">
-                                                                <label>
-                                                                    Start (s):
-                                                                    <input
-                                                                        type="number"
-                                                                        className="trim-time-input"
-                                                                        value={trimTimes[index]?.start ?? ''}
-                                                                        onChange={(e) => setTrimTimes(prev => ({
-                                                                            ...prev,
-                                                                            [index]: { ...prev[index], start: parseFloat(e.target.value) || 0 }
-                                                                        }))}
-                                                                        min={0}
-                                                                        step={1}
-                                                                    />
-                                                                </label>
-                                                                <label>
-                                                                    End (s):
-                                                                    <input
-                                                                        type="number"
-                                                                        className="trim-time-input"
-                                                                        value={trimTimes[index]?.end ?? ''}
-                                                                        onChange={(e) => setTrimTimes(prev => ({
-                                                                            ...prev,
-                                                                            [index]: { ...prev[index], end: parseFloat(e.target.value) || 0 }
-                                                                        }))}
-                                                                        min={0}
-                                                                        step={1}
-                                                                    />
-                                                                </label>
-                                                                <span className="trim-duration">
-                                                                    Duration: {((trimTimes[index]?.end || 0) - (trimTimes[index]?.start || 0)).toFixed(0)}s
-                                                                </span>
-                                                            </div>
-                                                            <button
-                                                                className="trim-generate-btn"
-                                                                onClick={async () => {
-                                                                    const t = trimTimes[index];
-                                                                    if (!t || t.start >= t.end) {
-                                                                        setError('Start time must be less than end time');
-                                                                        return;
-                                                                    }
-                                                                    try {
-                                                                        setGeneratingInsight({ index, mode: 'trim' });
-                                                                        setGenerationProgress(prev => ({ ...prev, [index]: 'Trimming & generating...' }));
-                                                                        const result = await trimAndGenerate(
-                                                                            selectedSource.id, index, t.start, t.end
-                                                                        );
-                                                                        setGenerationProgress(prev => ({ ...prev, [index]: result.message }));
-                                                                        setSuccess(result.message);
-                                                                        if (result.redirect_to) {
-                                                                            setTimeout(() => navigateTo(result.redirect_to), 2000);
-                                                                        }
-                                                                    } catch (err) {
-                                                                        setError(err.message);
-                                                                    } finally {
-                                                                        setGeneratingInsight(null);
-                                                                    }
-                                                                }}
-                                                                disabled={generatingInsight !== null}
-                                                            >
-                                                                🚀 Generate Trimmed Video
-                                                            </button>
-                                                        </div>
-                                                    )}
-                                                </div>
+                                                <span className="ts-time">{formatTimestamp(seg.start)}</span>
+                                                <span className="ts-text">{seg.text}</span>
                                             </div>
                                         ))}
                                     </div>
-
-                                    {/* Bulk Actions */}
-                                    {selectedInsights.size > 0 && (
-                                        <div className="yt-bulk-actions">
-                                            <div className="selected-count">
-                                                Selected: {selectedInsights.size} insights
-                                            </div>
-                                            <div className="bulk-buttons">
-                                                <button
-                                                    className="bulk-btn mode-b"
-                                                    onClick={() => handleCreateBulkShorts('B')}
-                                                >
-                                                    Generate All Selected (Mode B) 🚀
-                                                </button>
-                                            </div>
-                                        </div>
-                                    )}
-                                </>
-                            )}
-                        </>
-                    ) : (
-                        <div className="yt-empty-insights">
-                            <div className="empty-icon">📊</div>
-                            <h3>No Video Selected</h3>
-                            <p>Paste a YouTube URL above to analyze, or select a previously analyzed video from the sidebar.</p>
-                        </div>
-                    )}
-                </div>
-            </div>
-
-            {/* Summary Modal */}
-            {showSummaryModal && (
-                <div className="summary-modal-overlay" onClick={() => setShowSummaryModal(false)}>
-                    <div className="summary-modal" onClick={(e) => e.stopPropagation()}>
-                        <div className="modal-header">
-                            <h2>📋 Video Summary</h2>
-                            <div className="modal-header-actions">
-                                {videoSummary && (
-                                    <button className="download-summary-btn" onClick={handleDownloadSummary} title="Download summary as markdown">
-                                        ⬇️ Download
-                                    </button>
+                                ) : (
+                                    <div className="panel-empty">
+                                        No transcript available yet. It will appear once analysis finishes.
+                                    </div>
                                 )}
-                                <button className="modal-close" onClick={() => setShowSummaryModal(false)}>×</button>
+                                {transcript && (
+                                    <div className="transcript-source-tag">
+                                        Source: {transcript.transcript_source || 'youtube_captions'}
+                                    </div>
+                                )}
                             </div>
                         </div>
-                        <div className="modal-content">
-                            {isLoadingSummary ? (
-                                <div className="modal-loading">
-                                    <span className="loading-spinner"></span>
-                                    <p>Generating summary...</p>
-                                </div>
-                            ) : videoSummary ? (
-                                <>
-                                    <div className="summary-source">
-                                        <strong>{videoSummary.title}</strong>
-                                        {videoSummary.channel_name && (
-                                            <span className="summary-channel">by {videoSummary.channel_name}</span>
-                                        )}
+                    )}
+
+                    {/* Insights (if available) */}
+                    {selectedSource.insights && selectedSource.insights.length > 0 && (
+                        <div className="overview-insights">
+                            <h3>🎯 Key Insights ({selectedSource.insights.length})</h3>
+                            <div className="insights-grid">
+                                {selectedSource.insights.slice(0, 6).map((insight, idx) => (
+                                    <div
+                                        key={idx}
+                                        className="insight-mini-card"
+                                        onClick={() => {
+                                            setTrimStart(Math.floor(insight.start_time));
+                                            setTrimEnd(Math.ceil(insight.end_time || insight.start_time + 30));
+                                            goToStep(STEPS.EDITOR);
+                                        }}
+                                    >
+                                        <div className="insight-mini-time">
+                                            [{insight.formatted_time}] ⭐ {insight.viral_score}/10
+                                        </div>
+                                        <div className="insight-mini-summary">{insight.summary}</div>
                                     </div>
-                                    <div className="summary-text" dangerouslySetInnerHTML={{
-                                        __html: videoSummary.video_summary.replace(/\n/g, '<br>')
-                                            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-                                            .replace(/- (.*?)(?=<br>|$)/g, '• $1')
-                                    }} />
-                                </>
-                            ) : (
-                                <p>No summary available</p>
-                            )}
+                                ))}
+                            </div>
                         </div>
+                    )}
+
+                    <div className="wizard-nav">
+                        <button className="nav-btn back" onClick={() => goToStep(STEPS.URL_INPUT)}>
+                            ← Back
+                        </button>
+                        <button
+                            className="nav-btn next"
+                            onClick={() => goToStep(STEPS.EDITOR)}
+                        >
+                            Next: Edit Video →
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {/* === STEP 3: VIDEO EDITOR === */}
+            {currentStep === STEPS.EDITOR && selectedSource && (
+                <div className="wizard-panel step-editor">
+                    <div className="wizard-panel-header">
+                        <h2>✂️ Video Editor</h2>
+                        <p>Trim your clip and control audio</p>
+                    </div>
+
+                    {/* Video Preview with YouTube IFrame API */}
+                    {selectedSource.youtube_video_id && (
+                        <div className="editor-video-preview">
+                            <div className="video-player-wrapper editor-player">
+                                <div id="yt-editor-player" />
+                            </div>
+                            <div className="preview-controls">
+                                <button
+                                    className="play-selection-btn"
+                                    onClick={() => {
+                                        if (playerRef.current && playerRef.current.seekTo) {
+                                            playerRef.current.seekTo(Math.floor(trimStart), true);
+                                            playerRef.current.playVideo();
+                                        }
+                                    }}
+                                >
+                                    ▶ Play Selection ({formatTimestamp(trimStart)} → {formatTimestamp(trimEnd)})
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Timeline */}
+                    <div className="editor-timeline" ref={timelineRef}>
+                        <div className="timeline-bar">
+                            <div
+                                className="timeline-selection"
+                                style={{
+                                    left: `${(trimStart / (selectedSource.duration_seconds || 60)) * 100}%`,
+                                    width: `${((trimEnd - trimStart) / (selectedSource.duration_seconds || 60)) * 100}%`
+                                }}
+                            />
+                            <div
+                                className="timeline-handle start"
+                                style={{ left: `${(trimStart / (selectedSource.duration_seconds || 60)) * 100}%` }}
+                                title={`Start: ${formatTimestamp(trimStart)}`}
+                            />
+                            <div
+                                className="timeline-handle end"
+                                style={{ left: `${(trimEnd / (selectedSource.duration_seconds || 60)) * 100}%` }}
+                                title={`End: ${formatTimestamp(trimEnd)}`}
+                            />
+                        </div>
+                        <div className="timeline-labels">
+                            <span>0:00</span>
+                            <span>{formatDuration(selectedSource.duration_seconds)}</span>
+                        </div>
+                    </div>
+
+                    {/* Trim inputs */}
+                    <div className="editor-controls">
+                        <div className="control-group">
+                            <label>Start Time</label>
+                            <div className="time-input-wrapper">
+                                <input
+                                    type="range"
+                                    min={0}
+                                    max={selectedSource.duration_seconds || 60}
+                                    value={trimStart}
+                                    onChange={(e) => {
+                                        const val = Number(e.target.value);
+                                        setTrimStart(Math.min(val, trimEnd - 1));
+                                    }}
+                                    className="time-slider"
+                                />
+                                <span className="time-display">{formatTimestamp(trimStart)}</span>
+                            </div>
+                        </div>
+
+                        <div className="control-group">
+                            <label>End Time</label>
+                            <div className="time-input-wrapper">
+                                <input
+                                    type="range"
+                                    min={0}
+                                    max={selectedSource.duration_seconds || 60}
+                                    value={trimEnd}
+                                    onChange={(e) => {
+                                        const val = Number(e.target.value);
+                                        setTrimEnd(Math.max(val, trimStart + 1));
+                                    }}
+                                    className="time-slider"
+                                />
+                                <span className="time-display">{formatTimestamp(trimEnd)}</span>
+                            </div>
+                        </div>
+
+                        <div className="clip-info">
+                            <span className="clip-duration">
+                                📏 Clip Duration: <strong>{formatDuration(trimEnd - trimStart)}</strong>
+                            </span>
+                        </div>
+                    </div>
+
+                    {/* Audio toggle */}
+                    <div className="audio-control">
+                        <label className="toggle-switch">
+                            <input
+                                type="checkbox"
+                                checked={stripAudio}
+                                onChange={(e) => setStripAudio(e.target.checked)}
+                            />
+                            <span className="toggle-slider" />
+                            <span className="toggle-label">
+                                {stripAudio ? '🔇 Original Audio Muted' : '🔊 Keep Original Audio'}
+                            </span>
+                        </label>
+                    </div>
+
+                    {/* Relevant transcript segments for the trim range */}
+                    {transcript && transcript.segments?.length > 0 && (
+                        <div className="editor-transcript-preview">
+                            <h4>📝 Transcript in selection</h4>
+                            <div className="transcript-preview-scroll">
+                                {transcript.segments
+                                    .filter(s => s.start >= trimStart && s.end <= trimEnd)
+                                    .slice(0, 20)
+                                    .map((seg, i) => (
+                                        <span key={i} className="ts-preview-text">{seg.text} </span>
+                                    ))}
+                                {transcript.segments.filter(s => s.start >= trimStart && s.end <= trimEnd).length === 0 && (
+                                    <span className="ts-preview-empty">No transcript segments in this range</span>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="wizard-nav">
+                        <button className="nav-btn back" onClick={() => goToStep(STEPS.VIDEO_OVERVIEW)}>
+                            ← Back
+                        </button>
+                        <button className="nav-btn next" onClick={() => goToStep(STEPS.MUSIC_CAPTIONS)}>
+                            Next: Music & Captions →
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {/* === STEP 4: MUSIC & CAPTIONS === */}
+            {currentStep === STEPS.MUSIC_CAPTIONS && selectedSource && (
+                <div className="wizard-panel step-music">
+                    <div className="wizard-panel-header">
+                        <h2>🎵 Music & Captions</h2>
+                        <p>Choose background music and caption style</p>
+                    </div>
+
+                    {/* Music selection */}
+                    <div className="music-section">
+                        <h3>🎶 Background Music</h3>
+                        <div className="music-grid">
+                            <div
+                                className={`music-card ${!selectedMusic ? 'selected' : ''}`}
+                                onClick={() => setSelectedMusic(null)}
+                            >
+                                <div className="music-icon">🔇</div>
+                                <div className="music-name">No Music</div>
+                            </div>
+                            {musicLibrary.map((track) => (
+                                <div
+                                    key={track.filename}
+                                    className={`music-card ${selectedMusic === track.filename ? 'selected' : ''}`}
+                                    onClick={() => setSelectedMusic(track.filename)}
+                                >
+                                    <div className="music-icon">🎵</div>
+                                    <div className="music-name">{track.label}</div>
+                                    <div className="music-file">{track.filename}</div>
+                                </div>
+                            ))}
+                        </div>
+
+                        {selectedMusic && (
+                            <div className="volume-control">
+                                <label>Volume: {Math.round(musicVolume * 100)}%</label>
+                                <input
+                                    type="range"
+                                    min={0}
+                                    max={0.5}
+                                    step={0.01}
+                                    value={musicVolume}
+                                    onChange={(e) => setMusicVolume(Number(e.target.value))}
+                                    className="volume-slider"
+                                />
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Caption selection */}
+                    <div className="caption-section">
+                        <h3>💬 Captions</h3>
+                        <div className="caption-options">
+                            {[
+                                { value: 'transcript', label: '📝 From Transcript', desc: 'Auto-generated from video speech' },
+                                { value: 'llm', label: '🤖 AI Generated', desc: 'LLM creates captions from summary' },
+                                { value: 'none', label: '❌ No Captions', desc: 'Skip caption generation' },
+                            ].map(opt => (
+                                <label
+                                    key={opt.value}
+                                    className={`caption-option ${captionSource === opt.value ? 'selected' : ''}`}
+                                >
+                                    <input
+                                        type="radio"
+                                        name="captionSource"
+                                        value={opt.value}
+                                        checked={captionSource === opt.value}
+                                        onChange={(e) => setCaptionSource(e.target.value)}
+                                    />
+                                    <div className="option-content">
+                                        <div className="option-label">{opt.label}</div>
+                                        <div className="option-desc">{opt.desc}</div>
+                                    </div>
+                                </label>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div className="wizard-nav">
+                        <button className="nav-btn back" onClick={() => goToStep(STEPS.EDITOR)}>
+                            ← Back
+                        </button>
+                        <button className="nav-btn next" onClick={() => goToStep(STEPS.GENERATE)}>
+                            Next: Review & Generate →
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {/* === STEP 5: REVIEW & GENERATE === */}
+            {currentStep === STEPS.GENERATE && selectedSource && (
+                <div className="wizard-panel step-generate">
+                    <div className="wizard-panel-header">
+                        <h2>🚀 Review & Generate</h2>
+                        <p>Choose your style, preview the script, then generate</p>
+                    </div>
+
+                    {/* Settings summary */}
+                    <div className="generate-summary">
+                        <div className="summary-row">
+                            <span className="summary-label">📹 Source</span>
+                            <span className="summary-value">{selectedSource.title}</span>
+                        </div>
+                        <div className="summary-row">
+                            <span className="summary-label">✂️ Trim</span>
+                            <span className="summary-value">
+                                {formatTimestamp(trimStart)} → {formatTimestamp(trimEnd)} ({formatDuration(trimEnd - trimStart)})
+                            </span>
+                        </div>
+                        <div className="summary-row">
+                            <span className="summary-label">🔊 Audio</span>
+                            <span className="summary-value">{stripAudio ? 'Original muted' : 'Keep original'}</span>
+                        </div>
+                        <div className="summary-row">
+                            <span className="summary-label">🎵 Music</span>
+                            <span className="summary-value">
+                                {selectedMusic ? `${selectedMusic} (${Math.round(musicVolume * 100)}%)` : 'None'}
+                            </span>
+                        </div>
+                        <div className="summary-row">
+                            <span className="summary-label">💬 Captions</span>
+                            <span className="summary-value">
+                                {captionSource === 'transcript' ? 'From transcript' : captionSource === 'llm' ? 'AI generated' : 'None'}
+                            </span>
+                        </div>
+                    </div>
+
+                    {/* Style options */}
+                    <div className="style-options">
+                        <div className="control-group">
+                            <label>Commentary Style</label>
+                            <select
+                                value={commentaryStyle}
+                                onChange={(e) => setCommentaryStyle(e.target.value)}
+                                className="style-select"
+                            >
+                                <option value="reaction">🎬 Reaction / Commentary</option>
+                                <option value="analysis">🔍 In-depth Analysis</option>
+                                <option value="educational">📚 Educational</option>
+                            </select>
+                        </div>
+
+                        <div className="control-group">
+                            <label>Content Type</label>
+                            <select
+                                value={contentType}
+                                onChange={(e) => setContentType(e.target.value)}
+                                className="style-select"
+                            >
+                                <option value="youtube_import">📥 YouTube Import</option>
+                                <option value="daily_update">📰 News / Daily Update</option>
+                                <option value="big_tech">🏢 Big Tech</option>
+                                <option value="book_review">📚 Book Review</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    {/* Two-phase flow: Generate Script → Review → Render */}
+                    <div className="generate-action">
+                        {generationResult && generationResult.status === 'generating' ? (
+                            /* Phase 3: Video rendering started */
+                            <div className="generation-result">
+                                <div className="result-icon">✅</div>
+                                <div className="result-text">{generationResult.message}</div>
+                                <div className="result-details">
+                                    {generationResult.script_id && <span>Script #{generationResult.script_id}</span>}
+                                    {generationResult.clip_duration && <span> • {formatDuration(generationResult.clip_duration)}</span>}
+                                </div>
+                            </div>
+                        ) : scriptPreview ? (
+                            /* Phase 2: Script preview — review & approve */
+                            <div className="script-preview-panel">
+                                <div className="script-preview-header">
+                                    <h3>📜 Generated Script</h3>
+                                    {scriptPreview.catchy_title && (
+                                        <div className="script-title">"{scriptPreview.catchy_title}"</div>
+                                    )}
+                                </div>
+
+                                {scriptPreview.scenes && scriptPreview.scenes.length > 0 ? (
+                                    <div className="script-scenes">
+                                        {scriptPreview.scenes.map((scene, idx) => (
+                                            <div key={idx} className="script-scene-card">
+                                                <div className="scene-header">
+                                                    <span className="scene-number">Scene {scene.scene_number || idx + 1}</span>
+                                                    {scene.duration && (
+                                                        <span className="scene-duration">~{scene.duration}s</span>
+                                                    )}
+                                                </div>
+                                                <div className="scene-text">{scene.text}</div>
+                                                {scene.visual_direction && (
+                                                    <div className="scene-visual">📷 {scene.visual_direction}</div>
+                                                )}
+                                            </div>
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <div className="script-raw-preview">
+                                        {scriptPreview.script_preview}
+                                    </div>
+                                )}
+
+                                <div className="script-preview-actions">
+                                    <button
+                                        className="nav-btn back"
+                                        onClick={() => {
+                                            setScriptPreview(null);
+                                            setGenerationResult(null);
+                                        }}
+                                    >
+                                        ↩ Regenerate Script
+                                    </button>
+                                    <button
+                                        className="generate-btn"
+                                        onClick={handleApproveAndRender}
+                                        disabled={isApproving}
+                                    >
+                                        {isApproving ? (
+                                            <><span className="loading-spinner" /> Rendering...</>
+                                        ) : (
+                                            <>🚀 Approve & Generate Video</>
+                                        )}
+                                    </button>
+                                </div>
+                            </div>
+                        ) : (
+                            /* Phase 1: Generate script */
+                            <button
+                                className="generate-btn script-btn"
+                                onClick={handleGenerateScript}
+                                disabled={isGenerating}
+                            >
+                                {isGenerating ? (
+                                    <><span className="loading-spinner" /> Generating Script...</>
+                                ) : (
+                                    <>📜 Generate Script Preview</>
+                                )}
+                            </button>
+                        )}
+                    </div>
+
+                    <div className="wizard-nav">
+                        <button className="nav-btn back" onClick={() => goToStep(STEPS.MUSIC_CAPTIONS)}>
+                            ← Back
+                        </button>
                     </div>
                 </div>
             )}

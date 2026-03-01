@@ -59,10 +59,10 @@ export async function analyzeBook(bookId) {
 }
 
 /**
- * Create an article from a book for video pipeline.
+ * Generate a script from a book for preview before video generation.
  */
-export async function createArticleFromBook(bookId, angleIndex = 0, customAngle = null) {
-    const response = await fetch(`${API_BASE}/${bookId}/create-article`, {
+export async function generateBookScript(bookId, angleIndex = 0, customAngle = null) {
+    const response = await fetch(`${API_BASE}/${bookId}/generate-script`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -72,7 +72,7 @@ export async function createArticleFromBook(bookId, angleIndex = 0, customAngle 
     });
     if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.detail || 'Failed to create article');
+        throw new Error(error.detail || 'Failed to generate script');
     }
     return response.json();
 }
@@ -80,15 +80,28 @@ export async function createArticleFromBook(bookId, angleIndex = 0, customAngle 
 /**
  * Generate a video directly from a book (one-click flow).
  * Chains: Article → Script → TTS → Video Render.
+ * Now supports reviewed script_id, tts_provider, and voice selection.
  */
-export async function generateBookVideo(bookId, angleIndex = 0, customAngle = null, projectFolder = null) {
+export async function generateBookVideo(bookId, angleIndex = 0, customAngle = null, projectFolder = null, scriptId = null, ttsProvider = null, voice = null, backgroundMode = 'auto', imageSource = 'stock', videoSource = 'stock') {
     const body = {
         angle_index: angleIndex,
-        custom_angle: customAngle
+        custom_angle: customAngle,
+        background_mode: backgroundMode,
+        image_source: imageSource,
+        video_source: videoSource
     };
 
     if (projectFolder) {
         body.project_folder = projectFolder;
+    }
+    if (scriptId) {
+        body.script_id = scriptId;
+    }
+    if (ttsProvider) {
+        body.tts_provider = ttsProvider;
+    }
+    if (voice) {
+        body.voice = voice;
     }
 
     const response = await fetch(`${API_BASE}/${bookId}/generate-video`, {
@@ -118,6 +131,18 @@ export async function prepareBookAssets(bookId) {
 }
 
 /**
+ * Get available TTS voice options for a content type.
+ */
+export async function getVoiceOptions(contentType = 'book_review') {
+    const response = await fetch(`${API_BASE}/voice-options?content_type=${encodeURIComponent(contentType)}`);
+    if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to get voice options');
+    }
+    return response.json();
+}
+
+/**
  * Get all books in library.
  */
 export async function getAllBooks(limit = 50) {
@@ -128,3 +153,4 @@ export async function getAllBooks(limit = 50) {
     }
     return response.json();
 }
+

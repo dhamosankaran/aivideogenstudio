@@ -16,7 +16,7 @@ class PexelsService:
     """Service for searching and caching stock photos from Pexels."""
     
     BASE_URL = "https://api.pexels.com/v1"
-    CACHE_DIR = Path("data/images")
+    CACHE_DIR = Path("data/images/_cache")
     
     def __init__(self, api_key: Optional[str] = None):
         """

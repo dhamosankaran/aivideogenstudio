@@ -73,32 +73,43 @@ Generate metadata for this book review video:
      - "📖 The 1% Rule from Atomic Habits"
      - "🔥 Why 37x Better Isn't About Willpower"
 
-2. **Description** (structured, max 500 chars):
-   - Line 1: Hook sentence — expand on the title's curiosity gap
+2. **Description** (structured, 500-1500 chars — FILL IT OUT):
+   - Line 1: Hook sentence — expand on the title's curiosity gap (1-2 sentences)
    - Line 2: (blank line)
-   - Lines 3-5: "📌 Key Takeaways:" followed by 3 bullet points (use • character)
-   - Line 6: (blank line)
-   - Line 7: "👉 Follow @60SecondBooks for daily book reviews in 60 seconds!"
-   - Lines 8+: Hashtags on a new line (most important first)
+   - Lines 3-7: "📌 Key Takeaways:" followed by 3-5 bullet points (use • character)
+   - Line 8: (blank line)
+   - Lines 9-10: "📚 About the Book:" — 1-2 sentences about the book and author's credibility
+   - Line 11: (blank line)
+   - Line 12: "🎯 Who Should Read This:" — 1 sentence describing the target audience
+   - Line 13: (blank line)
+   - Line 14: "👉 Follow @60SecondBooks for daily book reviews in 60 seconds!"
+   - Lines 15+: Hashtags on a new line (most important first)
+   
+   IMPORTANT: Aim for 500-1500 characters. Shorter descriptions hurt SEO. Include real value so viewers engage.
 
-3. **Hashtags** (3-5 total):
+3. **Hashtags** (5-8 total for maximum reach):
    - MUST start with #Shorts
    - Include #BookReview
-   - Include book-specific tag (e.g., #AtomicHabits)
-   - Optionally include genre tag (e.g., #SelfHelp, #Psychology)
+   - Include book-specific tag (e.g., #AtomicHabits — no spaces)
+   - Include genre tags (e.g., #SelfHelp, #Psychology, #BusinessBooks, #Leadership)
+   - Include trending book tags: #BookTok, #MustRead, #BookRecommendation
+   - Include at least ONE niche tag relevant to the book's topic
 
-4. **Tags** (comma-separated long-tail keywords, 8-12):
-   - MUST include: "{book_title} summary", "{book_author} books", "book review shorts"
-   - Include genre-specific terms (e.g., "habit building tips", "self improvement books")
-   - Include common misspellings and variations
-   - Include: "60 second book review", "short book summary"
+4. **Tags** (comma-separated long-tail keywords, 15-20 to FILL toward 500 chars):
+   - MUST include: "{book_title} summary", "{book_author} books", "book review shorts", "60 second book review", "short book summary"
+   - Include genre-specific terms (e.g., "habit building tips", "self improvement books 2026")
+   - Include comparison/discovery tags: "books like {book_title}", "best [genre] books", "top [genre] books 2026"
+   - Include audience-intent tags: "what to read next", "book recommendations [genre]", "[topic] tips from books"
+   - Include channel tags: "60secondbooks", "60 second books review", "quick book summary"
+   - Include common misspellings and search variations of the book title
+   - IMPORTANT: Generate enough tags to use 400-500 of the 500 character limit
 
 Return ONLY valid JSON in this format:
 {{
   "title": "🧠 3 Tiny Habits That Will Change Your Life",
-  "description": "What if getting 1% better every day could make you 37x better in a year?\\n\\n📌 Key Takeaways:\\n• Small habits compound into remarkable results\\n• Focus on systems, not goals\\n• The 4 laws of behavior change\\n\\n👉 Follow @60SecondBooks for daily book reviews in 60 seconds!\\n\\n#Shorts #BookReview #AtomicHabits #SelfHelp",
-  "hashtags": ["#Shorts", "#BookReview", "#AtomicHabits", "#SelfHelp"],
-  "tags": ["atomic habits summary", "james clear books", "book review shorts", "habit building tips", "self improvement books", "60 second book review", "short book summary", "atomic habits review"]
+  "description": "What if getting 1% better every day could make you 37x better in a year? James Clear's Atomic Habits reveals the science behind small changes.\\n\\n📌 Key Takeaways:\\n• Small habits compound into remarkable results — 1% daily = 37x in a year\\n• Focus on systems, not goals — systems drive lasting change\\n• The 4 laws of behavior change: Cue, Craving, Response, Reward\\n• Identity-based habits outperform outcome-based goals\\n• Environment design matters more than motivation\\n\\n📚 About the Book: Atomic Habits by James Clear has sold over 15 million copies and been translated into 50+ languages. It's the definitive guide to habit formation backed by behavioral science.\\n\\n🎯 Who Should Read This: Anyone who wants to break bad habits, build good ones, and master the tiny behaviors that lead to remarkable results.\\n\\n👉 Follow @60SecondBooks for daily book reviews in 60 seconds!\\n\\n#Shorts #BookReview #AtomicHabits #SelfHelp #BookTok #MustRead #ProductivityBooks #HabitBuilding",
+  "hashtags": ["#Shorts", "#BookReview", "#AtomicHabits", "#SelfHelp", "#BookTok", "#MustRead", "#ProductivityBooks", "#HabitBuilding"],
+  "tags": ["atomic habits summary", "james clear books", "book review shorts", "60 second book review", "short book summary", "atomic habits review", "habit building tips", "self improvement books 2026", "books like atomic habits", "best self help books", "productivity books", "atomic habits key takeaways", "james clear atomic habits", "what to read next self help", "book recommendations self improvement", "60secondbooks", "quick book summary", "top habit books 2026", "behavior change books", "atomic habbits summary"]
 }}"""
 
 

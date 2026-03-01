@@ -96,14 +96,22 @@ class AudioService:
             # Use formatted_script for TTS (cleaned of section markers)
             text_to_synthesize = script.formatted_script or script.raw_script
             
-            # Select voice based on content type
-            # Book reviews use "nova" for clearer articulation on longer narration
-            article = self.db.query(Article).filter(Article.id == script.article_id).first() if script.article_id else None
-            if article and article.suggested_content_type == "book_review" and not voice:
-                voice = "nova"
+            # Select voice based on content type using centralized voice config
+            if not voice:
+                from app.voice_config import get_voice_preset
+                article = self.db.query(Article).filter(Article.id == script.article_id).first() if script.article_id else None
+                content_type = (
+                    getattr(article, 'suggested_content_type', '') or
+                    getattr(script, 'content_type', '') or
+                    'default'
+                )
+                preset = get_voice_preset(content_type, audio.tts_provider)
+                voice = preset.get("voice")
                 audio.voice = voice
                 import logging
-                logging.getLogger(__name__).info("Book review detected – using 'nova' voice for clearer articulation")
+                logging.getLogger(__name__).info(
+                    f"Voice config: content_type={content_type}, provider={audio.tts_provider}, voice={voice}"
+                )
             
             # Generate audio bytes
             audio_bytes = await tts_provider.synthesize_speech(

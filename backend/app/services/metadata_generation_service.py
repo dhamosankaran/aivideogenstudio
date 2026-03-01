@@ -157,15 +157,25 @@ class MetadataGenerationService:
         tags = []
         
         if content_type == "book_review":
-            # Book-specific fallback
+            # Book-specific fallback — aim for 15+ tags filling toward 500 chars
             tags.append(f"{article_title} summary")
             if book_author:
                 tags.append(f"{book_author} books")
+                tags.append(f"{book_author} {article_title}")
             tags.extend([
                 "book review shorts",
                 "60 second book review",
                 "short book summary",
                 article_title.lower(),
+                f"books like {article_title}",
+                f"{article_title} review",
+                f"{article_title} key takeaways",
+                "book recommendations",
+                "what to read next",
+                "60secondbooks",
+                "quick book summary",
+                f"best books 2026",
+                "must read books",
             ])
         else:
             # Generic fallback — use full title as first tag + common terms

@@ -165,3 +165,113 @@ class TrimAndGenerateResponse(BaseModel):
     redirect_to: str = "/validation"
 
 
+# ── Phase 3: Universal Download & Editor Schemas ──────────────
+
+class VideoDownloadRequest(BaseModel):
+    """Request to download a video from any supported platform."""
+    url: str = Field(..., description="Video URL (YouTube, X/Twitter, LinkedIn)")
+    strip_audio: bool = Field(default=False, description="Remove original audio from downloaded video")
+
+
+class VideoInfoResponse(BaseModel):
+    """Response containing video metadata without download."""
+    platform: str
+    url: str
+    video_id: Optional[str] = None
+    title: Optional[str] = None
+    duration: Optional[float] = None
+    thumbnail_url: Optional[str] = None
+    channel_name: Optional[str] = None
+    channel_url: Optional[str] = None
+    view_count: Optional[int] = None
+    upload_date: Optional[str] = None
+    description: Optional[str] = None
+    error: Optional[str] = None
+
+
+class VideoDownloadResponse(BaseModel):
+    """Response after downloading a video."""
+    status: str
+    message: str
+    platform: str
+    source_id: Optional[int] = None
+    file_path: Optional[str] = None
+    duration: Optional[float] = None
+    file_size: Optional[int] = None
+    has_audio: bool = True
+    metadata: Optional[dict] = None
+
+
+class TranscriptSegment(BaseModel):
+    """A single transcript segment with timestamps."""
+    text: str
+    start: float
+    end: float
+
+
+class TranscriptResponse(BaseModel):
+    """Response containing structured transcript data."""
+    source_id: int
+    title: Optional[str] = None
+    transcript_source: Optional[str] = None  # "youtube_captions" or "whisper"
+    segments: List[TranscriptSegment] = []
+    full_text: str = ""
+    duration: Optional[float] = None
+
+
+class EditorTrimRequest(BaseModel):
+    """Request to trim a downloaded video."""
+    start_time: float = Field(..., description="Trim start time in seconds")
+    end_time: float = Field(..., description="Trim end time in seconds")
+
+
+class EditorMusicRequest(BaseModel):
+    """Request to apply background music."""
+    music_track: str = Field(..., description="Filename of music track from library")
+    volume: float = Field(default=0.12, description="Music volume (0.0-1.0)")
+
+
+class EditorGenerateRequest(BaseModel):
+    """Full editor generation request with all options."""
+    trim_start: Optional[float] = Field(None, description="Trim start time in seconds")
+    trim_end: Optional[float] = Field(None, description="Trim end time in seconds")
+    strip_audio: bool = Field(default=True, description="Remove original audio")
+    music_track: Optional[str] = Field(None, description="Background music track filename")
+    music_volume: float = Field(default=0.12, description="Music volume (0.0-1.0)")
+    generate_captions: bool = Field(default=True, description="Generate captions for the video")
+    caption_source: str = Field(default="transcript", description="Caption source: transcript, llm, or none")
+    commentary_style: str = Field(default="reaction", description="Script style: reaction, analysis, educational")
+    auto_approve: bool = Field(default=True, description="Auto-approve and start video generation")
+    content_type: str = Field(default="youtube_import", description="Content type for styling")
+
+
+class EditorGenerateResponse(BaseModel):
+    """Response for editor generation."""
+    status: str
+    message: str
+    article_id: Optional[int] = None
+    script_id: Optional[int] = None
+    video_id: Optional[int] = None
+    clip_path: Optional[str] = None
+    clip_duration: Optional[float] = None
+    # Script preview (returned when auto_approve=false)
+    script_preview: Optional[str] = None  # Formatted script text
+    catchy_title: Optional[str] = None
+    scenes: Optional[list] = None  # Scene breakdown
+    redirect_to: str = "/validation"
+
+
+class MusicTrackResponse(BaseModel):
+    """Response for a single music track."""
+    filename: str
+    content_type: str
+    label: str
+    size_kb: float
+
+
+class MusicLibraryResponse(BaseModel):
+    """Response containing available music tracks."""
+    tracks: List[MusicTrackResponse] = []
+    default_track: str = "Tech.mp3"
+
+

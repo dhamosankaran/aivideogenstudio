@@ -316,13 +316,9 @@ class ContentService:
         return [feed[0] for feed in feeds]
     
     def get_content_types(self) -> List[str]:
-        """Get list of available content types."""
-        return [
-            "daily_update",
-            "big_tech",
-            "leader_quote",
-            "arxiv_paper"
-        ]
+        """Get list of available content types from the central registry."""
+        from app.content_types import get_all_content_type_keys
+        return get_all_content_type_keys()
     
     def _parse_date_range(self, date_range: str) -> Optional[datetime]:
         """Parse date range string to datetime."""

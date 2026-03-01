@@ -318,3 +318,32 @@ A dedicated **Channel Dashboard** view within the app to track the performance (
 ### Status
 - **Priority**: Post-Launch / Phase 3
 - **Action**: Added to roadmap. Implement after YouTube upload integration is stable.
+
+---
+
+## Feature 6: Human-Centric Visuals & Contextual Grounding
+
+**Date Added**: 2026-02-22  
+**CTO Review**: Approved — [Full Assessment](file:///Users/kalaidhamu/.gemini/antigravity/brain/0dd22516-eba1-4db4-a366-1d12ba59916e/implementation_plan.md)
+
+### Goal
+Move book review videos beyond abstract metaphors (soldiers, matchsticks) toward realistic human interactions that mirror the engagement of live-action book reviewers.
+
+### Proposed Changes
+
+| # | Proposal | Effort | Impact | Priority |
+|---|----------|--------|--------|----------|
+| 1 | **Human Presence Weight** — Modify `_build_book_review_script_prompt()` to add a "Human Presence" directive. If script uses personal pronouns (`you`, `I`, `we`), prioritize B-roll of diverse people in relevant settings. Add `human_presence_boost` to `ImageSearchOrchestrator`. | 🟢 Low (2-3h) | 🔴 High | P0 |
+| 2 | **Avatar Integration Layer** — Create `avatar_service.py` stub for HeyGen/Synthesia API hooks. Allows overlaying a "talking head" or "book-holding" avatar on cinematic backgrounds. **Note**: Live API adds $0.10-0.50/video cost. | 🟡 Med (6-8h) | 🔴 High | P2 |
+| 3 | **Book in 30% of Scenes** — Ensure the physical book or its cover appears in ≥3 of 8 scenes via prompt directives + fallback logic in `enhanced_video_service.py`. | 🟢 Low (1-2h) | 🟡 Med | P0 |
+| 4 | **Match-Cut Logic** — Phase A: Add `transition_hint` field to scene schema (fade, cut, match_cut) + variable crossfade durations. Phase B (future): Full FFmpeg `xfade` filter graph for true match-cuts. | 🟢/🔴 Split | 🟡 Med | P1/P2 |
+
+### Files Affected
+- `backend/app/prompts/__init__.py` — Prompt engineering for proposals 1, 3, 4a
+- `backend/app/services/image_search_orchestrator.py` — Human presence boost parameter
+- `backend/app/services/enhanced_video_service.py` — Book fallback logic, transition hints
+- `backend/app/services/avatar_service.py` — **New** stub module for proposal 2
+
+### Status
+- **Priority**: Future Enhancement
+- **Action**: Documented for future sprint. Implement proposals 1, 3, 4a first (prompt-level, ~5 hours), then 2 and 4b.

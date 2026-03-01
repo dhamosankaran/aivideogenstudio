@@ -19,6 +19,7 @@ from app.routers import (
     health,
     youtube_router,
     book_router,
+    viral_news_router,
 )
 from app.utils.logger import setup_logging, get_logger
 
@@ -74,6 +75,7 @@ app.include_router(news_router.router)
 app.include_router(health.router)
 app.include_router(youtube_router.router)
 app.include_router(book_router.router)
+app.include_router(viral_news_router.router)
 
 
 

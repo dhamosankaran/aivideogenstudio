@@ -37,6 +37,8 @@ from app.services.whisper_service import WhisperService
 from app.services.image_search_orchestrator import ImageSearchOrchestrator
 from app.services.background_music_service import BackgroundMusicService
 from app.services.end_screen_service import EndScreenService
+from app.services.pattern_interrupt_service import PatternInterruptService
+from app.content_types import get_project_subfolder
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +54,7 @@ class EnhancedVideoCompositionService:
         self.whisper = WhisperService()
         self.music_service = BackgroundMusicService()
         self.end_screen_service = EndScreenService()
+        self.pattern_interrupt = PatternInterruptService()
         
         # Use orchestrator for multi-source image search (fallback)
         self.image_search = ImageSearchOrchestrator()
@@ -65,6 +68,19 @@ class EnhancedVideoCompositionService:
         except Exception as e:
             logger.warning(f"Pexels Video Service not available: {e}")
         
+        # Initialize Veo Video Service for AI-generated video backgrounds
+        self.veo_video = None
+        try:
+            from app.services.veo_video_service import VeoVideoService
+            veo = VeoVideoService()
+            if veo.is_available:
+                self.veo_video = veo
+                logger.info("✓ Veo Video Service initialized (AI video backgrounds)")
+            else:
+                logger.info("Veo Video Service: API key not configured (optional)")
+        except Exception as e:
+            logger.warning(f"Veo Video Service not available: {e}")
+        
         logger.info(f"Image sources: {self.image_search.get_provider_status()}")
         
     def create_video_task(
@@ -72,7 +88,10 @@ class EnhancedVideoCompositionService:
         script_id: int, 
         audio_id: Optional[int] = None,
         background_style: str = "scenes",  # "scenes" or "gradient"
-        project_folder: Optional[str] = None
+        project_folder: Optional[str] = None,
+        background_mode: str = "auto",  # auto, images_only, videos_only, mixed
+        image_source: str = "stock",  # stock, ai_generated, auto
+        video_source: str = "stock"  # stock, veo
     ) -> Video:
         """Create a video record and return it (before processing)."""
         # Fetch Script
@@ -103,9 +122,12 @@ class EnhancedVideoCompositionService:
                 "resolution": "1080x1920",
                 "fps": 30,
                 "background": background_style,
+                "background_mode": background_mode,
                 "use_whisper": True,
                 "use_images": bool(self.image_search.unsplash or self.image_search.pexels),
-                "project_folder": project_folder
+                "project_folder": project_folder,
+                "image_source": image_source,
+                "video_source": video_source
             },
             # Auto-populate metadata from script
             youtube_title=script.catchy_title,
@@ -250,6 +272,7 @@ class EnhancedVideoCompositionService:
         logger.info("Extracting word-level timing with Whisper...")
         timing_data = self.whisper.transcribe_audio(audio_path)
         all_words = timing_data["words"]
+        all_segments = timing_data.get("segments", [])  # Sentence-level segments for CC-style subtitles
         
         # Resolution (1080x1920 for Shorts)
         w, h = 1080, 1920
@@ -259,9 +282,8 @@ class EnhancedVideoCompositionService:
         logger.info("Mapping scenes to audio timing...")
         scenes_with_timing = self.whisper.get_scene_timing(audio_path, script.scenes)
         
-        # PRE-FETCH 3-4 IMAGES for variety across video
-        # This ensures topic-relevant images using the article context
-        logger.info("Pre-fetching topic-relevant images for video...")
+        # ===== PROJECT FOLDER SETUP (single source of truth for all assets) =====
+        logger.info("Setting up project folder for all assets...")
         prefetched_images = []
         article_title = getattr(script.article, 'title', '') if script.article else ''
         
@@ -269,117 +291,226 @@ class EnhancedVideoCompositionService:
         content_type_hint = getattr(script, 'content_type', '') or getattr(script.article, 'suggested_content_type', '') or ''
         is_book_review = (content_type_hint == "book_review")
         
-        # Check for project folder override
+        # --- Topic subfolder (e.g. "books", "news", "tech") ---
+        topic_subfolder = get_project_subfolder(content_type_hint or 'daily_update')
+        
+        # Create project directory (single location for all asset storage)
+        import re as _re
+        project_image_dir = None
+        project_video_dir = None
+        
+        if is_book_review and script.article and hasattr(script.article, 'book_source') and script.article.book_source:
+            book = script.article.book_source
+            sanitized = _re.sub(r'[^\w\s-]', '', (book.title or article_title)).strip().lower()
+            sanitized = _re.sub(r'[-\s]+', '_', sanitized)
+            project_base = Path(f"data/projects/{topic_subfolder}/{book.id}_{sanitized}")
+        else:
+            # Non-book content: use article ID for project folder
+            article_id = script.article_id or script.id
+            sanitized = _re.sub(r'[^\w\s-]', '', article_title[:50]).strip().lower()
+            sanitized = _re.sub(r'[-\s]+', '_', sanitized) if sanitized else 'untitled'
+            project_base = Path(f"data/projects/{topic_subfolder}/article_{article_id}_{sanitized}")
+        
+        project_image_dir = project_base / "images"
+        project_video_dir = project_base / "videos"
+        project_image_dir.mkdir(parents=True, exist_ok=True)
+        project_video_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"[Project] Base dir: {project_base}")
+        logger.info(f"[Project] Image dir: {project_image_dir}")
+        logger.info(f"[Project] Video dir: {project_video_dir}")
+        
+        # Check for existing images in project folder (reuse from previous runs)
         project_folder = settings.get("project_folder")
         if project_folder and Path(project_folder).exists():
             image_dir = Path(project_folder) / "images"
             if image_dir.exists():
-                # Load all valid images from project folder
                 project_images = sorted([
                     p for p in image_dir.glob("*") 
                     if p.suffix.lower() in ('.jpg', '.jpeg', '.png', '.webp')
                 ])
                 if project_images:
                     prefetched_images.extend(project_images)
-                    logger.info(f"[Project] Loaded {len(project_images)} images from {project_folder}")
+                    logger.info(f"[Project] Reusing {len(project_images)} existing images")
         
-        # BOOK REVIEW V2.1: Per-scene image search with ENTITY GROUNDING
-        # Every search query includes book_title + author_name for relevance
+        # ===== IMAGE FETCHING (project-dir-first) =====
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
         if is_book_review:
-            logger.info("[Book V2.1] Entity-grounded multi-image mode")
+            logger.info("[Book V3] Project-dir-first image mode")
             
             # Extract book context for entity grounding
             book_author = ''
             book_title_clean = article_title
-            book_project_dir = None
             if script.article and hasattr(script.article, 'book_source') and script.article.book_source:
                 book = script.article.book_source
                 book_author = book.author or ''
                 book_title_clean = book.title or article_title
-                
-                # Create per-book image directory
-                import re as _re
-                sanitized = _re.sub(r'[^\w\s-]', '', book_title_clean).strip().lower()
-                sanitized = _re.sub(r'[-\s]+', '_', sanitized)
-                book_project_dir = Path(f"data/projects/{book.id}_{sanitized}/images")
-                book_project_dir.mkdir(parents=True, exist_ok=True)
-                logger.info(f"[Book V2.1] Per-book image dir: {book_project_dir}")
             
-            # Try to get book cover for scene 1
+            # Download book cover directly to project dir (scene 1)
             if not prefetched_images:
                 if script.article and hasattr(script.article, 'book_source') and script.article.book_source:
                     book = script.article.book_source
                     if book.cover_url:
-                        cover_path = self._download_book_cover(book.cover_url, book.title)
+                        cover_path = self._download_book_cover(
+                            book.cover_url, book.title, 
+                            output_dir=project_image_dir
+                        )
                         if cover_path:
                             prefetched_images.insert(0, cover_path)
-                            logger.info(f"[Book V2.1] Scene 1 cover: {cover_path.name}")
+                            logger.info(f"[Book V3] Cover saved to project: {cover_path.name}")
             
-            # Search for unique images for each scene with entity-grounded queries
-            import asyncio
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-            
-            # Build entity-grounding context prefix
-            entity_context = book_title_clean
+            # Build entity-grounding context prefix (quoted for exact phrase matching)
+            entity_context = f'"{book_title_clean}"'
             if book_author:
-                entity_context = f"{book_title_clean} {book_author}"
-            logger.info(f"[Book V2.1] Entity context: '{entity_context}'")
+                entity_context = f'"{book_title_clean}" {book_author}'
+            logger.info(f"[Book V3] Entity context: {entity_context}")
             
+            # Per-scene image search → saved directly to project dir
             scene_images = {}  # Map scene index -> image path
+            image_source = settings.get("image_source", "stock")
+            
+            # When AI-generated images are selected, force images_only background mode
+            # so the render loop uses AI images as backgrounds (not stock videos)
+            if image_source == "ai_generated":
+                settings["background_mode"] = "images_only"
+                logger.info("[Book V3] AI image source selected → forcing background_mode=images_only")
+            
             for i, scene in enumerate(scenes_with_timing):
-                # Scene 1 (Hook) uses the cover from prefetched_images
+                # Scene 1 (Hook) uses the cover
                 if i == 0 and prefetched_images:
                     scene_images[i] = prefetched_images[0]
-                    logger.info(f"[Book V2.1] Scene {i+1}: Using book cover")
+                    logger.info(f"[Book V3] Scene {i+1}: Using book cover")
                     continue
+                
+                # Check if scene image already exists in project dir
+                # SKIP cache when image_source is ai_generated — always regenerate
+                if image_source != "ai_generated":
+                    existing_scene = project_image_dir / f"scene_{i+1}.jpg"
+                    if existing_scene.exists():
+                        scene_images[i] = existing_scene
+                        logger.info(f"[Book V3] Scene {i+1}: Reusing {existing_scene.name}")
+                        continue
+                
+                # Detect if scene text uses personal pronouns → enable human presence boost
+                scene_text = (scene.get("text", "") or "").lower()
+                has_personal_pronouns = any(p in scene_text.split() for p in ['you', 'your', 'i', 'we', 'our', 'my'])
+                use_human_boost = has_personal_pronouns and i >= 3  # Scenes 4+ for book reviews
+                if use_human_boost:
+                    logger.info(f"[HumanBoost] Scene {i+1}: Personal pronouns detected, boosting human imagery")
+                
+                # === AI IMAGE GENERATION (if image_source is ai_generated or auto) ===
+                ai_prompt = None
+                if image_source in ("ai_generated", "auto") and self.image_search.gemini_image:
+                    ai_prompt = self.image_search.gemini_image.build_scene_prompt(
+                        scene_text=scene.get("text", ""),
+                        visual_cues=scene.get("visual_cues", ""),
+                        book_title=book_title_clean,
+                        book_author=book_author,
+                        scene_number=i + 1,
+                        total_scenes=len(scenes_with_timing)
+                    )
+                    logger.info(f"[Book V3] Scene {i+1}: Built AI prompt ({len(ai_prompt)} chars)")
                 
                 # Search for scene-specific image with entity grounding
                 keywords = scene.get("image_keywords", [])
                 found = False
-                for keyword in keywords[:2]:  # Try up to 2 keywords per scene
-                    # ENTITY GROUNDING: prepend book title + author to every query
-                    grounded_query = f"{entity_context} {keyword}"
-                    logger.info(f"[Book V2.1] Scene {i+1}: Searching '{grounded_query[:60]}'...")
+                
+                # If AI prompt is available, try Gemini first via orchestrator
+                if ai_prompt:
                     try:
                         image_path = loop.run_until_complete(
                             self.image_search.search_image_async(
-                                keywords=[f"{book_title_clean} {keyword}"],
-                                topic_query=grounded_query[:120],
+                                keywords=[f"{book_title_clean} scene {i+1}"],
+                                topic_query=None,
                                 orientation="portrait",
-                                content_type=content_type_hint
+                                content_type=content_type_hint,
+                                output_dir=project_image_dir,
+                                ai_prompt=ai_prompt
                             )
                         )
                         if image_path:
-                            # Copy to per-book folder if available
-                            if book_project_dir:
-                                import shutil
-                                scene_dest = book_project_dir / f"scene_{i+1}.jpg"
+                            import shutil
+                            scene_dest = project_image_dir / f"scene_{i+1}.png"
+                            if image_path != scene_dest:
                                 shutil.copy(image_path, scene_dest)
                                 image_path = scene_dest
-                                logger.info(f"[Book V2.1] Scene {i+1}: Saved to {scene_dest.name}")
-                            
                             scene_images[i] = image_path
                             found = True
-                            break
+                            logger.info(f"[Book V3] Scene {i+1}: AI-generated {scene_dest.name}")
                     except Exception as e:
-                        logger.warning(f"[Book V2.1] Scene {i+1} search failed: {e}")
+                        logger.warning(f"[Book V3] Scene {i+1} AI generation failed: {e}")
+                
+                # Fallback to stock search if AI didn't produce an image
+                if not found:
+                    for keyword in keywords[:2]:
+                        grounded_query = f"{entity_context} {keyword}"
+                        logger.info(f"[Book V3] Scene {i+1}: Searching '{grounded_query[:80]}'...")
+                        try:
+                            image_path = loop.run_until_complete(
+                                self.image_search.search_image_async(
+                                    keywords=[f"{book_title_clean} {keyword}"],
+                                    topic_query=grounded_query[:120],
+                                    orientation="portrait",
+                                    content_type=content_type_hint,
+                                    output_dir=project_image_dir,
+                                    human_presence_boost=use_human_boost
+                                )
+                            )
+                            if image_path:
+                                # Rename to scene_N.jpg for organized storage
+                                import shutil
+                                scene_dest = project_image_dir / f"scene_{i+1}.jpg"
+                                if image_path != scene_dest:
+                                    shutil.copy(image_path, scene_dest)
+                                    image_path = scene_dest
+                                
+                                scene_images[i] = image_path
+                                found = True
+                                logger.info(f"[Book V3] Scene {i+1}: Saved {scene_dest.name}")
+                                break
+                        except Exception as e:
+                            logger.warning(f"[Book V3] Scene {i+1} search failed: {e}")
                 
                 if not found:
-                    # Fallback: use cover or last available image
                     fallback = prefetched_images[0] if prefetched_images else None
                     if fallback:
                         scene_images[i] = fallback
-                        logger.info(f"[Book V2.1] Scene {i+1}: Fallback to cover")
+                        logger.info(f"[Book V3] Scene {i+1}: Fallback to cover")
+            
+            # === BOOK OBJECT GROUNDING: 30% Rule ===
+            # Ensure the physical book appears in at least 3 of 8 scenes.
+            # Count scenes that already use the book cover image.
+            if prefetched_images:
+                cover_path_str = str(prefetched_images[0])
+                book_scene_count = sum(
+                    1 for idx, path in scene_images.items()
+                    if str(path) == cover_path_str or 'cover' in str(path).lower()
+                )
+                # Scene 0 always has cover; check if we need more
+                min_book_scenes = 3
+                if book_scene_count < min_book_scenes:
+                    # Inject book cover into unfilled scene slots (prefer scene 7, then 4, then 5)
+                    priority_slots = [6, 3, 4]  # 0-indexed: scene 7, 4, 5
+                    for slot in priority_slots:
+                        if book_scene_count >= min_book_scenes:
+                            break
+                        if slot < len(scenes_with_timing) and slot not in scene_images:
+                            scene_images[slot] = prefetched_images[0]
+                            book_scene_count += 1
+                            logger.info(f"[Book30%] Injected book cover into scene {slot+1} (grounding)")
+                
+                logger.info(f"[Book30%] Book present in {book_scene_count}/{len(scenes_with_timing)} scenes")
             
             # Summary
             unique_count = len(set(str(v) for v in scene_images.values()))
-            logger.info(f"[Book V2.1] {unique_count} unique images across {len(scene_images)} scenes")
+            logger.info(f"[Book V3] {unique_count} unique images across {len(scene_images)} scenes in {project_image_dir}")
         else:
-            # Non-book-review: original pre-fetch logic (collect all keywords, search up to 4)
+            # Non-book content: fetch images into project dir
             all_keywords = []
             for scene in scenes_with_timing:
                 all_keywords.extend(scene.get("image_keywords", []))
@@ -388,15 +519,7 @@ class EnhancedVideoCompositionService:
             seen = set()
             unique_keywords = [k for k in all_keywords if not (k in seen or seen.add(k))]
             
-            # Fetch images using article context + keywords
-            import asyncio
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-            
-            # Search for up to 6 images for variety
+            # Search for up to 6 images, save to project dir
             for keyword in unique_keywords[:6]:
                 search_query = f"{article_title} {keyword}" if article_title else keyword
                 logger.info(f"[Pre-fetch] Searching: {search_query[:60]}...")
@@ -407,7 +530,8 @@ class EnhancedVideoCompositionService:
                             keywords=[keyword],
                             topic_query=search_query[:100],
                             orientation="portrait",
-                            content_type=content_type_hint
+                            content_type=content_type_hint,
+                            output_dir=project_image_dir
                         )
                     )
                     if image_path and image_path not in prefetched_images:
@@ -416,8 +540,26 @@ class EnhancedVideoCompositionService:
                 except Exception as e:
                     logger.warning(f"Pre-fetch failed for '{keyword}': {e}")
             
-            logger.info(f"Pre-fetched {len(prefetched_images)} images for video")
+            logger.info(f"Pre-fetched {len(prefetched_images)} images to {project_image_dir}")
             scene_images = {}  # Not used for non-book content
+        
+        # ===== PRE-RENDER: PLAN INTERRUPTS + VALIDATE ASSETS =====
+        # Generate alternating Ken Burns directions (7-second reset logic)
+        scene_directions = self.pattern_interrupt.get_scene_directions(len(scenes_with_timing))
+        logger.info(f"[PatternInterrupt] Scene directions: {scene_directions}")
+        
+        # Validate all pre-fetched scene images exist before entering render loop
+        # Prevents 'black screen' errors from stale paths or failed downloads
+        if is_book_review and scene_images:
+            for idx in list(scene_images.keys()):
+                img_path = scene_images[idx]
+                if img_path and not Path(img_path).exists():
+                    logger.warning(f"[AssetCheck] Scene {idx+1} image missing: {img_path} — falling back to cover")
+                    scene_images[idx] = prefetched_images[0] if prefetched_images else None
+            logger.info(f"[AssetCheck] Asset validation complete for {len(scene_images)} scenes")
+        
+        # Plan audio/visual interrupts (used for SFX layer later)
+        interrupt_plan = self.pattern_interrupt.plan_interrupts(scenes_with_timing, duration)
         
         # Create scene clips
         scene_clips = []
@@ -432,21 +574,72 @@ class EnhancedVideoCompositionService:
             bg_clip = None
             keywords = scene.get("image_keywords", [])
             
-            # BOOK REVIEW V2: Use per-scene image mapping
-            if is_book_review and i in scene_images:
-                image_path = scene_images[i]
-                logger.info(f"[Book V2] Scene {i+1}: Using {image_path.name}")
-                bg_clip = self._create_ken_burns_clip(image_path, scene_duration, (w, h))
+            # ===== BACKGROUND MODE LOGIC =====
+            # Read background_mode from render settings (auto, images_only, videos_only, mixed)
+            background_mode = settings.get("background_mode", "auto")
+            logger.info(f"[Background] Mode: {background_mode} for scene {i+1}")
             
-            # PRIORITY 1: Try to get a stock VIDEO (skip for book reviews)
-            if bg_clip is None and self.video_search and keywords and not is_book_review:
+            # Retention Logic: alternating push-in/pull-out Ken Burns direction
+            kb_direction = scene_directions[i] if i < len(scene_directions) else "push_in"
+            
+            # BOOK REVIEW V3: Scene 1 (Hook) always uses book cover image
+            # Scenes 2+ try video first for visual variety, then fall back to images
+            if is_book_review and i == 0 and i in scene_images:
+                image_path = scene_images[i]
+                logger.info(f"[Book V3] Scene 1 (Hook): Using book cover {image_path.name}")
+                bg_clip = self._create_ken_burns_clip(image_path, scene_duration, (w, h), direction=kb_direction)
+            elif background_mode == "images_only":
+                # Images only mode: use pre-fetched images, skip video search entirely
+                if i in scene_images:
+                    image_path = scene_images[i]
+                    logger.info(f"[Images Only] Scene {i+1}: Using image {image_path.name}")
+                    bg_clip = self._create_ken_burns_clip(image_path, scene_duration, (w, h), direction=kb_direction)
+            elif is_book_review and i in scene_images and not self.video_search:
+                # No video service available — use pre-fetched image
+                image_path = scene_images[i]
+                logger.info(f"[Book V3] Scene {i+1}: Using image (no video service) {image_path.name}")
+                bg_clip = self._create_ken_burns_clip(image_path, scene_duration, (w, h), direction=kb_direction)
+            
+            # PRIORITY 0.5: Try Veo AI video generation (if video_source is "veo")
+            video_source = settings.get("video_source", "stock")
+            if bg_clip is None and video_source == "veo" and self.veo_video and background_mode != "images_only":
+                try:
+                    scene_text_for_vid = scene.get("text", "")
+                    visual_cues_for_vid = scene.get("visual_cues", "")
+                    veo_prompt = self.veo_video.build_scene_prompt(
+                        scene_text=scene_text_for_vid,
+                        visual_cues=visual_cues_for_vid,
+                        book_title=article_title if is_book_review else "",
+                        book_author=book_author if is_book_review else "",
+                        scene_number=i + 1,
+                        total_scenes=len(scenes_with_timing),
+                        content_type=content_type_hint or "daily_update",
+                    )
+                    veo_output = project_video_dir / f"scene_{i+1}_veo.mp4"
+                    logger.info(f"[Veo] Scene {i+1}: Generating AI video ({len(veo_prompt)} chars)")
+                    veo_path = loop.run_until_complete(
+                        self.veo_video.generate_video(
+                            prompt=veo_prompt,
+                            output_path=veo_output,
+                        )
+                    )
+                    if veo_path:
+                        bg_clip = self._create_video_background(veo_path, scene_duration, (w, h))
+                        if bg_clip:
+                            logger.info(f"[Veo] Scene {i+1}: Using AI-generated video")
+                except Exception as veo_err:
+                    logger.warning(f"[Veo] Scene {i+1} generation failed (falling back): {veo_err}")
+            
+            # PRIORITY 1: Try to get a stock VIDEO (unless images_only mode)
+            if bg_clip is None and self.video_search and keywords and background_mode != "images_only":
                 for keyword in keywords:
                     logger.info(f"[Video] Searching for: {keyword}")
                     video_path = self.video_search.search_video(
                         [keyword], 
                         orientation="portrait",
                         min_duration=5,
-                        max_duration=30
+                        max_duration=30,
+                        output_dir=project_video_dir
                     )
                     if video_path:
                         bg_clip = self._create_video_background(video_path, scene_duration, (w, h))
@@ -459,7 +652,7 @@ class EnhancedVideoCompositionService:
                 image_index = i % len(prefetched_images)
                 image_path = prefetched_images[image_index]
                 logger.info(f"[Image] Using pre-fetched image {image_index+1}/{len(prefetched_images)}: {image_path.name}")
-                bg_clip = self._create_ken_burns_clip(image_path, scene_duration, (w, h))
+                bg_clip = self._create_ken_burns_clip(image_path, scene_duration, (w, h), direction=kb_direction)
             
             # PRIORITY 3: Real-time search fallback
             if bg_clip is None and keywords:
@@ -472,11 +665,12 @@ class EnhancedVideoCompositionService:
                                 keywords=[keyword],
                                 topic_query=search_query[:100],
                                 orientation="portrait",
-                                content_type=content_type_hint
+                                content_type=content_type_hint,
+                                output_dir=project_image_dir
                             )
                         )
                         if image_path:
-                            bg_clip = self._create_ken_burns_clip(image_path, scene_duration, (w, h))
+                            bg_clip = self._create_ken_burns_clip(image_path, scene_duration, (w, h), direction=kb_direction)
                             logger.info(f"[Image] Using real-time search for scene {i+1}")
                             break
                     except Exception as e:
@@ -491,23 +685,43 @@ class EnhancedVideoCompositionService:
             scene_clip = bg_clip
             scene_clip = scene_clip.with_start(scene_start).with_duration(scene_duration)
             
-            # Add fade/crossfade transitions
+            # Add fade/crossfade transitions (driven by transition_hint from script)
+            transition_hint = scene.get("transition_hint", "fade") if is_book_review else "fade"
             effects = []
             if i > 0:
-                fade_duration = 0.8 if is_book_review else 0.5  # Longer crossfade for book reviews
-                effects.append(vfx.FadeIn(fade_duration))
+                if transition_hint == "cut":
+                    # Hard cut: no transition effect
+                    pass
+                elif transition_hint == "match_cut":
+                    # Quick dissolve for match-cuts (abstract → human reaction)
+                    effects.append(vfx.FadeIn(0.3))
+                else:
+                    # Default fade
+                    fade_duration = 0.8 if is_book_review else 0.5
+                    effects.append(vfx.FadeIn(fade_duration))
             if i < len(scenes_with_timing) - 1:
-                fade_duration = 0.8 if is_book_review else 0.5
-                effects.append(vfx.FadeOut(fade_duration))
+                # Fade out uses same hint as the NEXT scene's transition_hint
+                next_hint = scenes_with_timing[i + 1].get("transition_hint", "fade") if is_book_review else "fade"
+                if next_hint == "cut":
+                    pass
+                elif next_hint == "match_cut":
+                    effects.append(vfx.FadeOut(0.3))
+                else:
+                    fade_duration = 0.8 if is_book_review else 0.5
+                    effects.append(vfx.FadeOut(fade_duration))
             if effects:
                 scene_clip = scene_clip.with_effects(effects)
             
             scene_clips.append(scene_clip)
         
-        # Create subtitle clips — use phrase-level for book reviews, word-level for others
+        # Create subtitle clips — sentence-level for book reviews (YouTube CC style), word-level for others
         if is_book_review:
-            logger.info("Creating phrase-level subtitles (Book V2)...")
-            all_subtitle_clips = self._create_phrase_subtitles(all_words, (w, h))
+            logger.info("Creating sentence-level subtitles (Book V3 — YouTube CC style)...")
+            # Extract timestamps for kinetic typography color flip (visual pattern interrupt)
+            visual_interrupt_times = [ev["time"] for ev in interrupt_plan]
+            all_subtitle_clips = self._create_sentence_subtitles(
+                all_words, all_segments, (w, h), interrupt_times=visual_interrupt_times
+            )
         else:
             logger.info("Creating word-level subtitles...")
             all_subtitle_clips = self._create_word_subtitles(all_words, (w, h))
@@ -557,6 +771,29 @@ class EnhancedVideoCompositionService:
             final_audio = audio_clip
             logger.warning("No background music available, using narration only")
         
+        # ── SFX Layer: Pattern Interrupt Audio Resets ──
+        # Inject subtle whoosh/thud sound effects at planned interrupt timestamps
+        # to refresh viewer attention every 7-10 seconds (only for book reviews)
+        if is_book_review and interrupt_plan:
+            sfx_clips = [final_audio]
+            sfx_added = 0
+            for interrupt in interrupt_plan:
+                if interrupt.get("type") == "audio":
+                    sfx_time = interrupt["time"]
+                    sfx_type = interrupt.get("sfx_type", "whoosh")
+                    if sfx_time < duration - 0.5:
+                        try:
+                            sfx_clip = self.pattern_interrupt.get_sfx_clip(sfx_type, duration=0.3)
+                            if sfx_clip:
+                                sfx_clip = sfx_clip.with_start(sfx_time).with_volume_scaled(0.08)
+                                sfx_clips.append(sfx_clip)
+                                sfx_added += 1
+                        except Exception as sfx_e:
+                            logger.warning(f"[SFX] Failed to add {sfx_type} at {sfx_time:.1f}s: {sfx_e}")
+            if sfx_added > 0:
+                final_audio = CompositeAudioClip(sfx_clips)
+                logger.info(f"[PatternInterrupt] Added {sfx_added} SFX clips to audio mix")
+        
         # Set audio on main video
         main_video = main_video.with_audio(final_audio.subclipped(0, duration))
         
@@ -593,16 +830,17 @@ class EnhancedVideoCompositionService:
             music_clip.close()
         final_video.close()
 
-    def _download_book_cover(self, cover_url: str, book_title: str) -> Optional[Path]:
-        """Download book cover from OpenLibrary for use as scene background."""
+    def _download_book_cover(self, cover_url: str, book_title: str, output_dir: Optional[Path] = None) -> Optional[Path]:
+        """Download book cover from OpenLibrary directly to project folder."""
         import httpx
-        cache_key = hashlib.md5(f"bookcover_{book_title}".encode()).hexdigest()[:16]
-        cover_dir = Path("data/images/book_reviews")
-        cover_dir.mkdir(parents=True, exist_ok=True)
-        cover_path = cover_dir / f"{cache_key}.jpg"
         
-        if cover_path.exists():
-            logger.info(f"[Book] Using cached cover: {cover_path}")
+        # Save to project dir if specified, otherwise fallback
+        cover_dir = output_dir or Path("data/images/_cache")
+        cover_dir.mkdir(parents=True, exist_ok=True)
+        cover_path = cover_dir / "cover.jpg"
+        
+        if cover_path.exists() and cover_path.stat().st_size > 1000:
+            logger.info(f"[Book] Using existing cover: {cover_path}")
             return cover_path
         
         try:
@@ -625,7 +863,14 @@ class EnhancedVideoCompositionService:
             logger.warning(f"[Book] Failed to download cover: {e}")
         return None
 
-    def _create_ken_burns_clip(self, image_path: Path, duration: float, size: Tuple[int, int], zoom: float = None):
+    def _create_ken_burns_clip(
+        self,
+        image_path: Path,
+        duration: float,
+        size: Tuple[int, int],
+        zoom: float = None,
+        direction: str = "push_in"
+    ):
         """Create image clip with Ken Burns effect (slow zoom).
         
         Uses a "Fit & Blur" strategy for images that don't match 9:16:
@@ -638,6 +883,7 @@ class EnhancedVideoCompositionService:
             duration: Scene duration in seconds
             size: Target video size (width, height), e.g. (1080, 1920)
             zoom: Optional zoom factor override (default: 1.0 to 1.1, capped at 1.15)
+            direction: "push_in" (zoom in) or "pull_out" (zoom out) for 7-second reset
         """
         from PIL import Image as PILImage, ImageFilter
         import numpy as np
@@ -658,7 +904,7 @@ class EnhancedVideoCompositionService:
         img_aspect = img_w / img_h
         
         aspect_diff = abs(img_aspect - target_aspect)
-        logger.info(f"[KenBurns] Image {img_w}x{img_h} (aspect={img_aspect:.3f}), target={target_aspect:.3f}, diff={aspect_diff:.3f}")
+        logger.info(f"[KenBurns] {direction} | Image {img_w}x{img_h} (aspect={img_aspect:.3f}), target={target_aspect:.3f}, diff={aspect_diff:.3f}")
         
         if aspect_diff < 0.15:
             # ===== FILL MODE: Image is close to 9:16 =====
@@ -699,9 +945,16 @@ class EnhancedVideoCompositionService:
             img_clip = CompositeVideoClip([bg_clip, fitted_clip], size=(w, h))
             img_clip = img_clip.with_duration(duration)
         
-        # Apply Ken Burns slow zoom effect
-        zoom_start = 1.0
-        zoom_end = target_zoom
+        # Apply Ken Burns zoom effect — direction controls push-in vs pull-out
+        if direction == "pull_out":
+            # Pull-out: start zoomed in, slowly zoom back out (7-second reset)
+            zoom_start = target_zoom
+            zoom_end = 1.0
+        else:
+            # Push-in (default): start at 1.0, slowly zoom in
+            zoom_start = 1.0
+            zoom_end = target_zoom
+        
         def zoom_effect(t):
             return zoom_start + (zoom_end - zoom_start) * (t / max(duration, 0.1))
         
@@ -859,6 +1112,129 @@ class EnhancedVideoCompositionService:
             i += words_per_phrase
         
         logger.info(f"Created {len(clips)} phrase subtitle clips ({words_per_phrase} words each) at y={y_position}px")
+        return clips
+    
+    def _create_sentence_subtitles(
+        self, 
+        words: List[Dict], 
+        segments: List[Dict], 
+        video_size: Tuple[int, int],
+        interrupt_times: List[float] = None
+    ) -> List[TextClip]:
+        """Create sentence-level subtitle clips (YouTube CC style).
+        
+        Implements kinetic typography color flip as a 7-second pattern interrupt:
+        subtitle color alternates between white and warm gold at each interrupt
+        boundary, keeping viewer attention without changing layout.
+        
+        Args:
+            words: List of word timing dicts (fallback if segments unavailable)
+            segments: List of Whisper segment dicts with 'text', 'start', 'end'
+            video_size: (width, height) tuple
+            interrupt_times: List of timestamps (seconds) where color flips occur
+        """
+        w, h = video_size
+        clips = []
+        
+        # Position at 75% from top — slightly higher than phrase subtitles
+        # to accommodate multi-line text while staying in safe zone
+        y_position = int(h * 0.75)
+        
+        # Max characters per line before wrapping
+        MAX_CHARS_PER_LINE = 35
+        
+        # ── Kinetic Typography Color Palette ──
+        # Alternates at each pattern interrupt boundary for visual retention
+        COLOR_PALETTE = [
+            ('white', 'black'),       # Default: white text, black stroke
+            ('#FFD700', '#1a1a1a'),   # Warm gold text, dark stroke (brand accent)
+        ]
+        
+        if not segments:
+            # Fallback to phrase-level if no segments available
+            logger.warning("No Whisper segments available, falling back to phrase subtitles")
+            return self._create_phrase_subtitles(words, video_size)
+        
+        color_index = 0
+        sorted_interrupt_times = sorted(interrupt_times or [])
+        next_flip_idx = 0  # Index into sorted_interrupt_times
+        
+        for seg in segments:
+            text = seg.get("text", "").strip()
+            start = seg.get("start", 0)
+            end = seg.get("end", 0)
+            seg_duration = end - start
+            
+            if not text or seg_duration <= 0:
+                continue
+            
+            # Minimum duration to prevent flashing
+            if seg_duration < 0.5:
+                seg_duration = 0.5
+            
+            # Check if we've crossed a pattern interrupt threshold → flip color
+            while (next_flip_idx < len(sorted_interrupt_times) and
+                   start >= sorted_interrupt_times[next_flip_idx]):
+                color_index = (color_index + 1) % len(COLOR_PALETTE)
+                next_flip_idx += 1
+            
+            text_color, stroke_color = COLOR_PALETTE[color_index]
+            
+            # Auto-wrap long sentences into multiple lines
+            if len(text) > MAX_CHARS_PER_LINE:
+                words_in_text = text.split()
+                lines = []
+                current_line = []
+                current_len = 0
+                
+                for word in words_in_text:
+                    if current_len + len(word) + 1 > MAX_CHARS_PER_LINE and current_line:
+                        lines.append(" ".join(current_line))
+                        current_line = [word]
+                        current_len = len(word)
+                    else:
+                        current_line.append(word)
+                        current_len += len(word) + 1
+                
+                if current_line:
+                    lines.append(" ".join(current_line))
+                
+                # Cap at 3 lines max
+                display_text = "\n".join(lines[:3])
+            else:
+                display_text = text
+            
+            # Determine font size based on text length
+            if len(text) > 80:
+                font_size = 40
+            elif len(text) > 50:
+                font_size = 46
+            else:
+                font_size = 52
+            
+            txt_clip = (
+                TextClip(
+                    text=display_text,
+                    font_size=font_size,
+                    color=text_color,
+                    font='/System/Library/Fonts/Supplemental/Arial Bold.ttf',
+                    stroke_color=stroke_color,
+                    stroke_width=3,
+                    text_align='center',
+                    method='caption',
+                    size=(int(w * 0.9), None)  # 90% width for padding
+                )
+                .with_position(('center', y_position))
+                .with_start(start)
+                .with_duration(seg_duration)
+            )
+            clips.append(txt_clip)
+        
+        flip_count = next_flip_idx
+        logger.info(
+            f"Created {len(clips)} sentence subtitle clips (YouTube CC style) at y={y_position}px"
+            f" | {flip_count} typography color flips applied"
+        )
         return clips
     
     def _create_book_title_overlay(

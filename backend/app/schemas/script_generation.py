@@ -8,6 +8,7 @@ class Scene(BaseModel):
     image_keywords: List[str] = Field(default_factory=list, description="List of specific keywords for image search (e.g., 'Google HQ', 'Sundar Pichai', 'coding')")
     duration_estimate: Optional[int] = Field(default=None, description="Estimated duration for this scene in seconds")
     visual_style: Optional[str] = Field(default=None, description="Visual style hint (tech_modern, corporate, etc.)")
+    transition_hint: Optional[str] = Field(default="fade", description="Transition type to use before this scene: 'fade' (0.8s crossfade), 'cut' (hard cut), or 'match_cut' (0.3s quick dissolve)")
 
 class ScriptOutput(BaseModel):
     hook: str = Field(..., description="An attention-grabbing opening sentence (0-5 seconds)")

@@ -102,7 +102,16 @@ class GeminiProvider(BaseLLMProvider):
                     logger.warning(f"Gemini response had SAFETY finish_reason. Prompt excerpt: {prompt[:100]}...")
                     # Try to get text anyway
                     try:
-                        return response.text
+                        text = response.text
+                        # If we're in JSON mode, verify the JSON is complete
+                        if kwargs.get("response_mime_type") == "application/json":
+                            import json
+                            try:
+                                json.loads(text)
+                            except json.JSONDecodeError:
+                                logger.warning("Safety-truncated JSON detected — returning error")
+                                return "Error: Content blocked by safety filters. The response was truncated."
+                        return text
                     except Exception as text_error:
                         logger.warning(f"Could not get text from blocked response: {text_error}")
                         # Return a placeholder that will fail JSON parsing gracefully

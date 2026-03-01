@@ -38,7 +38,7 @@ class SerperImageService:
     """Service for searching images via Serper.dev API."""
     
     BASE_URL = "https://google.serper.dev/images"
-    CACHE_DIR = Path("data/images/serper_cache")
+    CACHE_DIR = Path("data/images/_cache")
     
     # Minimum dimensions for video backgrounds (portrait mode 1080x1920)
     MIN_WIDTH = 800

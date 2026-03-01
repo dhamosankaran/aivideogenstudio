@@ -65,9 +65,14 @@ export default function VideoValidation() {
             const data = await fetchVideoDetail(id);
             setVideoDetail(prev => {
                 if (!prev) return data;
-                // Only update if critical fields changed
+                // Update if status changed (render done) or metadata updated (SEO auto-generated)
                 if (prev.video.status !== data.video.status ||
-                    prev.video.file_path !== data.video.file_path) {
+                    prev.video.file_path !== data.video.file_path ||
+                    prev.video.youtube_description !== data.video.youtube_description) {
+                    // Auto-refresh editable fields when metadata arrives
+                    if (data.video.youtube_title) setEditedTitle(data.video.youtube_title);
+                    if (data.video.youtube_description) setEditedDescription(data.video.youtube_description);
+                    if (data.video.youtube_tags) setEditedTags(data.video.youtube_tags.join(', '));
                     return data;
                 }
                 return prev;
@@ -491,14 +496,23 @@ export default function VideoValidation() {
                                         </div>
 
                                         <div className="form-group" style={{ marginBottom: '1.5rem' }}>
-                                            <label>Description ({editedDescription.length}/5000)</label>
+                                            <label>Description ({editedDescription.length}/5000)
+                                                <span style={{
+                                                    fontSize: '0.75rem',
+                                                    color: editedDescription.length < 300 ? '#ef4444' : editedDescription.length <= 1500 ? '#22c55e' : '#666',
+                                                    marginLeft: '0.5rem'
+                                                }}>
+                                                    {editedDescription.length < 300 ? '⚠️ Too short for SEO' : editedDescription.length <= 1500 ? '✅ Great length' : ''}
+                                                </span>
+                                            </label>
                                             <textarea
                                                 className="form-input"
-                                                rows={6}
+                                                rows={8}
                                                 value={editedDescription}
                                                 onChange={(e) => setEditedDescription(e.target.value.slice(0, 5000))}
                                                 placeholder="Video description..."
                                             />
+                                            <small style={{ color: '#666', fontSize: '0.75rem' }}>Aim for 500-1500 chars for optimal YouTube SEO. Include key takeaways, book context, and CTA.</small>
                                         </div>
 
                                         <div className="form-group" style={{ marginBottom: '1.5rem' }}>
@@ -514,23 +528,103 @@ export default function VideoValidation() {
                                         </div>
 
                                         <div className="form-group">
-                                            <label>Tags (for YouTube search) ({editedTags.length}/500)</label>
-                                            <input
-                                                type="text"
+                                            <label>Tags (for YouTube search) ({editedTags.length}/500)
+                                                <span style={{
+                                                    fontSize: '0.75rem',
+                                                    color: editedTags.length < 200 ? '#f59e0b' : editedTags.length <= 480 ? '#22c55e' : '#ef4444',
+                                                    marginLeft: '0.5rem'
+                                                }}>
+                                                    {(() => {
+                                                        const tagCount = editedTags.split(',').filter(t => t.trim()).length;
+                                                        if (editedTags.length < 200) return `📊 ${tagCount} tags — add more for better reach`;
+                                                        if (editedTags.length <= 480) return `✅ ${tagCount} tags — great coverage`;
+                                                        return `⚠️ ${tagCount} tags — near limit`;
+                                                    })()}
+                                                </span>
+                                            </label>
+                                            <textarea
                                                 className="form-input"
+                                                rows={3}
                                                 value={editedTags}
                                                 onChange={(e) => setEditedTags(e.target.value.slice(0, 500))}
-                                                placeholder="AI, artificial intelligence, tech news"
+                                                placeholder="atomic habits summary, james clear books, book review shorts, 60 second book review..."
                                                 maxLength={500}
                                             />
-                                            <small style={{ color: editedTags.length > 450 ? '#ef4444' : '#666', fontSize: '0.75rem' }}>Comma-separated. Max 500 characters for YouTube compliance.</small>
+                                            <small style={{ color: editedTags.length > 450 ? '#ef4444' : '#666', fontSize: '0.75rem' }}>Comma-separated. Aim for 15-20 long-tail keywords filling 400-500 chars for maximum YouTube discoverability.</small>
                                         </div>
                                     </div>
 
                                     <div className="info-sidebar">
-                                        {/* Read-only info */}
+                                        {/* Book Context Panel (for book reviews) */}
+                                        {videoDetail.article?.book_source && (
+                                            <div style={{ background: 'linear-gradient(135deg, #fef3c7, #fed7aa)', padding: '1.25rem', borderRadius: '12px', marginBottom: '1rem', border: '1px solid #f59e0b' }}>
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
+                                                    <span style={{ fontSize: '1.2rem' }}>📚</span>
+                                                    <h4 style={{ margin: 0, color: '#92400e', fontSize: '0.95rem' }}>Book Review</h4>
+                                                </div>
+                                                <div style={{ fontSize: '0.85rem', color: '#78350f' }}>
+                                                    <p style={{ margin: '0 0 0.4rem 0', fontWeight: '600' }}>
+                                                        {videoDetail.article.book_source.title}
+                                                    </p>
+                                                    {videoDetail.article.book_source.author && (
+                                                        <p style={{ margin: '0 0 0.4rem 0' }}>
+                                                            ✍️ {videoDetail.article.book_source.author}
+                                                        </p>
+                                                    )}
+                                                    {videoDetail.article.book_source.first_publish_year && (
+                                                        <p style={{ margin: '0 0 0.4rem 0', fontSize: '0.8rem', color: '#92400e' }}>
+                                                            📅 First published: {videoDetail.article.book_source.first_publish_year}
+                                                        </p>
+                                                    )}
+                                                    {videoDetail.article.book_source.subjects && videoDetail.article.book_source.subjects.length > 0 && (
+                                                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem', margin: '0.5rem 0' }}>
+                                                            {videoDetail.article.book_source.subjects.slice(0, 4).map((subj, idx) => (
+                                                                <span key={idx} style={{
+                                                                    background: '#fbbf24',
+                                                                    color: '#78350f',
+                                                                    padding: '0.15rem 0.5rem',
+                                                                    borderRadius: '12px',
+                                                                    fontSize: '0.7rem',
+                                                                    fontWeight: '500'
+                                                                }}>{subj}</span>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                    {videoDetail.article.book_source.key_takeaways && videoDetail.article.book_source.key_takeaways.length > 0 && (
+                                                        <div style={{ marginTop: '0.6rem', borderTop: '1px solid #fbbf24', paddingTop: '0.5rem' }}>
+                                                            <p style={{ margin: '0 0 0.3rem 0', fontWeight: '600', fontSize: '0.8rem' }}>📌 Key Takeaways:</p>
+                                                            {videoDetail.article.book_source.key_takeaways.slice(0, 4).map((tk, idx) => (
+                                                                <p key={idx} style={{ margin: '0 0 0.25rem 0', fontSize: '0.75rem', lineHeight: '1.3' }}>
+                                                                    • {typeof tk === 'object' ? (tk.point || tk.hook || JSON.stringify(tk)) : tk}
+                                                                </p>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        {/* Read-only file info */}
                                         <div style={{ background: '#f9fafb', padding: '1.5rem', borderRadius: '12px' }}>
                                             <h4 style={{ marginTop: 0, marginBottom: '1rem' }}>File Info</h4>
+                                            {videoDetail.script?.content_type && (
+                                                <p style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                                                    <strong>Type:</strong>
+                                                    <span style={{
+                                                        background: videoDetail.script.content_type === 'book_review' ? '#fef3c7' : '#e0f2fe',
+                                                        color: videoDetail.script.content_type === 'book_review' ? '#92400e' : '#0369a1',
+                                                        padding: '0.15rem 0.5rem',
+                                                        borderRadius: '8px',
+                                                        fontSize: '0.8rem',
+                                                        fontWeight: '500'
+                                                    }}>
+                                                        {videoDetail.script.content_type === 'book_review' ? '📚 Book Review' :
+                                                            videoDetail.script.content_type === 'big_tech' ? '🏢 Big Tech' :
+                                                                videoDetail.script.content_type === 'daily_update' ? '📰 Daily Update' :
+                                                                    videoDetail.script.content_type}
+                                                    </span>
+                                                </p>
+                                            )}
                                             <p style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
                                                 <strong>Size:</strong> <span>{formatFileSize(videoDetail.video.file_size)}</span>
                                             </p>

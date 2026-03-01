@@ -117,11 +117,44 @@ class ScriptService:
             # Detect content type for specialized prompts
             content_type = getattr(article, 'suggested_content_type', '') or ''
             is_book_review = content_type == 'book_review'
+            is_viral_news = content_type == 'viral_news'
             
-            # Override target duration for book reviews (85s for 7-8 scene structure)
+            # Override target duration per content type
+            genre_strategy = None
             if is_book_review:
                 target_duration = 85
                 logger.info(f"Book review V2 detected – using 85s target with 7-8 scene structure")
+                
+                # Detect genre persona from book subjects
+                try:
+                    from app.services.genre_strategy import GenreStrategyRegistry
+                    book_subjects = []
+                    if hasattr(article, 'book_source') and article.book_source:
+                        book_subjects = article.book_source.subjects or []
+                    genre_strategy = GenreStrategyRegistry.detect(book_subjects)
+                    logger.info(f"[GenreStrategy] Using persona: {genre_strategy.get('name', 'default')}")
+                except Exception as e:
+                    logger.warning(f"[GenreStrategy] Detection failed, using default: {e}")
+            
+            elif is_viral_news:
+                target_duration = 60
+                logger.info(f"Viral news detected – using 60s target with 4-scene Breaking News structure")
+                
+                # Detect news category persona
+                try:
+                    from app.services.news_strategy import NewsStrategyRegistry
+                    news_category = getattr(article, 'suggested_content_type', '') or ''
+                    # Try to extract category from article metadata
+                    article_category = ''
+                    if hasattr(article, 'news_source') and article.news_source:
+                        article_category = getattr(article.news_source, 'news_category', '') or ''
+                    genre_strategy = NewsStrategyRegistry.detect(
+                        category=article_category,
+                        title=article.title or ''
+                    )
+                    logger.info(f"[NewsStrategy] Using persona: {genre_strategy.get('name', 'default')}")
+                except Exception as e:
+                    logger.warning(f"[NewsStrategy] Detection failed, using default: {e}")
             
             # Build scene-based prompt with full article content for factual accuracy
             prompt = build_script_generation_prompt(
@@ -132,7 +165,8 @@ class ScriptService:
                 target_duration=target_duration,
                 scene_based=True,
                 article_content=article_content,
-                category=content_type
+                category=content_type,
+                genre_strategy=genre_strategy
             )
             
             # Use Gemini's native JSON mode for structured output
@@ -144,6 +178,23 @@ class ScriptService:
                 max_tokens=8000,
                 response_mime_type="application/json"
             )
+            
+            # Check for safety filter error — retry once with softened prompt
+            if response_text.startswith("Error:") and "safety" in response_text.lower():
+                logger.warning(f"Safety filter triggered, retrying with softened prompt...")
+                safety_addendum = (
+                    "\n\nIMPORTANT: Use neutral, educational language throughout. "
+                    "Focus on the book's insights and value to readers. "
+                    "Avoid provocative phrasing or sensationalist language."
+                )
+                response_text = await self.llm.generate_text(
+                    prompt=prompt + safety_addendum,
+                    temperature=0.5,  # Slightly higher for creative variety
+                    max_tokens=8000,
+                    response_mime_type="application/json"
+                )
+                if response_text.startswith("Error:"):
+                    raise ValueError(f"Script generation blocked by safety filters after retry: {response_text}")
             
             # Validate with Pydantic (robust parsing)
             try:
@@ -164,7 +215,8 @@ class ScriptService:
                     "scene_number": s.scene_number,
                     "text": s.text,
                     "visual_cues": s.visual_cues,
-                    "image_keywords": s.image_keywords
+                    "image_keywords": s.image_keywords,
+                    "transition_hint": s.transition_hint or "fade"
                 } for s in script_data.scenes
             ]
             
@@ -184,10 +236,10 @@ class ScriptService:
             formatted_parts = [s.text for s in script_data.scenes]
             formatted_script = " ".join(formatted_parts)
             
-            # Apply phonetic fixes for book reviews (prevents TTS mispronunciations)
-            if is_book_review:
+            # Apply phonetic fixes for book reviews and viral news (prevents TTS mispronunciations)
+            if is_book_review or is_viral_news:
                 formatted_script = self._apply_phonetic_fixes(formatted_script)
-                logger.info("Applied phonetic fixes for book review TTS")
+                logger.info(f"Applied phonetic fixes for {content_type} TTS")
             
             # Calculate metadata
             word_count = self._count_words(formatted_script)
@@ -267,27 +319,32 @@ class ScriptService:
         
         logger.info(f"Generating commentary script for insight: {insight.get('summary', '')[:50]}...")
         
-        # Calculate target commentary duration (30-45s to complement clip)
-        target_commentary_duration = min(45, max(30, 90 - clip_duration))
-        target_words = int(target_commentary_duration * self.WORDS_PER_SECOND)
+        # Calculate target narration length to match the FULL clip duration
+        # Speaking rate: ~2.5 words/sec → script should cover the entire clip
+        target_words = int(clip_duration * self.WORDS_PER_SECOND)
+        # Ensure at least 60 words, cap at 500 for very long clips
+        target_words = max(60, min(500, target_words))
+        # Calculate number of scenes (roughly 1 scene per 15 seconds)
+        num_scenes = max(3, min(10, int(clip_duration / 15)))
         
-        # Build prompt for commentary generation
+        # Build prompt for narration generation
         prompt = self._build_commentary_prompt(
             insight=insight,
             source_title=source_title,
             source_channel=source_channel,
             mode=mode,
             target_words=target_words,
-            clip_duration=clip_duration
+            clip_duration=clip_duration,
+            num_scenes=num_scenes
         )
         
         try:
             response_text = await self.llm.generate_text(
                 prompt=prompt,
                 temperature=0.8,
-                max_tokens=2000,
-                response_mime_type="application/json",
-                response_schema=ScriptOutput
+                max_tokens=4000,
+                response_mime_type="application/json"
+                # NOTE: Not using response_schema as Gemini rejects Pydantic schemas with 'default' values
             )
             
             script_data = ScriptOutput.model_validate_json(response_text)
@@ -298,19 +355,19 @@ class ScriptService:
                     "scene_number": s.scene_number,
                     "text": s.text,
                     "visual_cues": s.visual_cues or "Show engaging visuals",
-                    "image_keywords": s.image_keywords or ["technology", "innovation"]
+                    "image_keywords": s.image_keywords or ["technology", "innovation"],
+                    "duration": round(len(s.text.split()) / self.WORDS_PER_SECOND)
                 } for s in script_data.scenes
             ]
             
             # Build formatted script for TTS
-            # Note: Scenes already contain hook and CTA, so we only use scenes
             formatted_parts = [s.text for s in script_data.scenes]
             formatted_script = " ".join(formatted_parts)
             
             word_count = self._count_words(formatted_script)
             estimated_duration = self.estimate_duration(formatted_script)
             
-            logger.info(f"Generated commentary script: {len(scenes_data)} scenes, {word_count} words, ~{estimated_duration:.0f}s")
+            logger.info(f"Generated narration script: {len(scenes_data)} scenes, {word_count} words, ~{estimated_duration:.0f}s (target: {clip_duration:.0f}s)")
             
             return {
                 "hook": script_data.hook,
@@ -318,9 +375,10 @@ class ScriptService:
                 "call_to_action": script_data.call_to_action,
                 "title_suggestion": script_data.title_suggestion,
                 "formatted_script": formatted_script,
+                "raw_script": formatted_script,
                 "word_count": word_count,
                 "estimated_duration": estimated_duration,
-                "source_attribution": f"Reacting to: {source_title} by {source_channel}"
+                "source_attribution": f"Based on: {source_title} by {source_channel}"
             }
             
         except Exception as e:
@@ -334,73 +392,73 @@ class ScriptService:
         source_channel: str,
         mode: str,
         target_words: int,
-        clip_duration: float
+        clip_duration: float,
+        num_scenes: int = 5
     ) -> str:
-        """Build the LLM prompt for commentary script generation."""
+        """Build the LLM prompt for narration script generation."""
         mode_instructions = {
             "reaction": """
-You're creating a REACTION video where you add your perspective after showing a clip.
-- React genuinely to what was said
-- Add your own insights and opinions  
-- Create a conversation with the viewer about this topic
-- Be engaging and personality-driven""",
+STYLE: ENGAGING COMMENTARY
+- React to and explain what's happening in the video
+- Add your own perspective and enthusiasm
+- Make the audience feel the excitement
+- Use dynamic, conversational language""",
             "analysis": """
-You're creating an ANALYSIS video where you break down the content after showing a clip.
-- Provide deeper context and background
-- Explain implications and consequences
-- Connect to broader trends
-- Be informative and educational""",
+STYLE: IN-DEPTH ANALYSIS
+- Break down what's happening and why it matters
+- Provide context, background, and implications
+- Connect to broader industry trends
+- Be informative yet accessible""",
             "educational": """
-You're creating an EDUCATIONAL video where you expand on the topic after showing a clip.
-- Explain any technical concepts simply
-- Add examples and analogies
-- Share additional facts and research
-- Make it accessible to all viewers"""
+STYLE: EDUCATIONAL NARRATOR
+- Explain what's happening step by step
+- Make technical concepts simple and clear
+- Add fun facts and context
+- Guide the viewer through the experience"""
         }
         
-        return f'''Generate a commentary script for a YouTube Shorts "react" video.
+        transcript_text = insight.get('transcript_text', '')
+        summary_text = insight.get('summary', '')
+        
+        return f'''You are a professional YouTube Shorts scriptwriter. Generate a NARRATION script that tells the story of this video in an engaging way.
 
-VIDEO STRUCTURE:
-1. Brief intro (3 seconds) - hook the viewer
-2. [ORIGINAL CLIP PLAYS HERE - {clip_duration:.0f} seconds]
-3. Your commentary (this is what you're writing - ~{target_words} words)
-4. Call to action (3 seconds)
-
-ORIGINAL VIDEO CONTEXT:
+SOURCE VIDEO:
 - Title: "{source_title}"
 - Channel: {source_channel}
-- Clip Summary: {insight.get('summary', 'Key insight from video')}
-- Key Points from clip:
-{chr(10).join(f"  • {p}" for p in insight.get('key_points', ['Interesting point']))}
+- Duration: {clip_duration:.0f} seconds
 
-COMMENTARY STYLE: {mode.upper()}
+VIDEO SUMMARY:
+{summary_text}
+
+VIDEO TRANSCRIPT (use this as your primary source for accuracy):
+{transcript_text}
+
 {mode_instructions.get(mode, mode_instructions['reaction'])}
 
 YOUR TASK:
-Write ONLY the commentary that plays AFTER the clip. Structure it as:
-1. **Hook** (played BEFORE clip): 5-7 words to grab attention. Something like "Wait until you hear this..." or "This changes everything..."
-2. **Scene 1**: Your initial reaction/take (2-3 sentences)
-3. **Scene 2**: Your deeper insight or added value (2-3 sentences)  
-4. **Scene 3**: What this means for viewers (1-2 sentences)
-5. **CTA**: Engaging call to action
+Write a compelling narration script (~{target_words} words, {num_scenes} scenes) that:
+1. TELLS THE STORY of what happens in this video — based on the transcript and summary above
+2. Is factually accurate to the actual content (names, places, facts from the transcript)
+3. Is engaging and dynamic — like a storyteller narrating to an audience
+4. Matches the video duration (~{clip_duration:.0f} seconds at ~2.5 words/second)
+5. Each scene should cover a distinct part/moment of the video
 
-REQUIREMENTS:
-- First person perspective (I, we, you)
-- Conversational and authentic tone
-- Total commentary: ~{target_words} words
-- Don't repeat what the clip already says
-- Add VALUE - give viewers a reason to follow you
+CRITICAL RULES:
+- Use the ACTUAL content from the transcript — don't make up facts
+- Keep the subject matter accurate (if it's about a robot, talk about the robot; if it's about a product, describe the product)
+- Write in second person ("you") or third person narrative — NOT first person
+- Each scene should be 2-4 sentences, vivid and descriptive
+- Total narration must be approximately {target_words} words to fill ~{clip_duration:.0f} seconds
 
 Return JSON with this structure:
 {{
-  "hook": "<5-7 word attention-grabber played before clip>",
+  "hook": "<5-10 word attention-grabber to open the video>",
   "scenes": [
-    {{"scene_number": 1, "text": "<your reaction>", "visual_cues": "<what to show>", "image_keywords": ["keyword1", "keyword2"]}},
-    {{"scene_number": 2, "text": "<your insight>", "visual_cues": "<what to show>", "image_keywords": ["keyword1", "keyword2"]}},
-    {{"scene_number": 3, "text": "<takeaway>", "visual_cues": "<what to show>", "image_keywords": ["keyword1", "keyword2"]}}
+    {{"scene_number": 1, "text": "<vivid narration for this part>", "visual_cues": "<what's shown on screen>", "image_keywords": ["keyword1", "keyword2"]}},
+    ... ({num_scenes} scenes total)
   ],
-  "call_to_action": "<engaging CTA>",
-  "title_suggestion": "<catchy title for the video>"
+  "call_to_action": "<engaging closing line>",
+  "title_suggestion": "<catchy video title>"
 }}'''
 
 
@@ -420,10 +478,17 @@ Return JSON with this structure:
         
         # Content-type-specific thresholds
         is_book_review = content_type == "book_review"
-        min_words = 180 if is_book_review else self.MIN_WORDS
-        max_words = 240 if is_book_review else self.MAX_WORDS
-        min_duration = 70 if is_book_review else self.MIN_DURATION
-        max_duration = 95 if is_book_review else self.MAX_DURATION
+        is_viral_news = content_type == "viral_news"
+        
+        if is_book_review:
+            min_words, max_words = 180, 240
+            min_duration, max_duration = 70, 95
+        elif is_viral_news:
+            min_words, max_words = 120, 200
+            min_duration, max_duration = 45, 80
+        else:
+            min_words, max_words = self.MIN_WORDS, self.MAX_WORDS
+            min_duration, max_duration = self.MIN_DURATION, self.MAX_DURATION
         
         # Check word count
         word_count = self._count_words(script)
@@ -439,11 +504,15 @@ Return JSON with this structure:
         elif duration > max_duration:
             errors.append(f"Duration too long: {duration:.1f}s (max {max_duration}s)")
         
-        # Check structure
-        required_sections = ["[HOOK]", "[CONTEXT]", "[MAIN POINTS]", "[WRAP-UP]", "[CTA]"]
-        missing_sections = [s for s in required_sections if s not in script]
-        if missing_sections:
-            errors.append(f"Missing sections: {', '.join(missing_sections)}")
+        # Check structure — only for legacy non-scene scripts
+        # Scene-based content types (book_review, viral_news) and scripts with
+        # [SCENE N] markers embed hook/CTA inside scenes, so skip this check.
+        is_scene_based = is_book_review or is_viral_news or "[SCENE" in script
+        if not is_scene_based:
+            required_sections = ["[HOOK]", "[CONTEXT]", "[MAIN POINTS]", "[WRAP-UP]", "[CTA]"]
+            missing_sections = [s for s in required_sections if s not in script]
+            if missing_sections:
+                errors.append(f"Missing sections: {', '.join(missing_sections)}")
         
         # Check for TTS issues
         if "http://" in script or "https://" in script:
@@ -758,6 +827,7 @@ Respond with ONLY the title text, no quotes or extra formatting."""
     def finalize_video_generation(self, video_id: int):
         """
         Stage 2: Render Video (Long Running Background Task).
+        After rendering, auto-generates SEO-optimized metadata using LLM.
         """
         # Create NEW session for background execution
         db = SessionLocal()
@@ -768,9 +838,86 @@ Respond with ONLY the title text, no quotes or extra formatting."""
             logger.info(f"Background: Starting render for video {video_id}")
             video_service.process_video(video_id)
             
+            # Auto-generate rich SEO metadata after successful render
+            self._auto_generate_metadata(db, video_id)
+            
         except Exception as e:
             logger.error(f"Background render failed for video {video_id}: {e}")
         finally:
             db.close()
+    
+    def _auto_generate_metadata(self, db, video_id: int):
+        """Auto-generate SEO-optimized YouTube metadata after video render."""
+        try:
+            from app.services.metadata_generation_service import MetadataGenerationService
+            import asyncio
+            
+            video = db.query(Video).filter(Video.id == video_id).first()
+            if not video or video.status != "completed":
+                logger.warning(f"[SEO] Skipping metadata gen — video {video_id} not completed")
+                return
+            
+            script = video.script
+            article = script.article if script else None
+            if not article:
+                logger.warning(f"[SEO] Skipping metadata gen — no article for video {video_id}")
+                return
+            
+            logger.info(f"[SEO] Auto-generating metadata for video {video_id}...")
+            
+            service = MetadataGenerationService()
+            
+            # Build context for the LLM
+            script_text = None
+            if script and script.scenes:
+                script_text = " ".join(s.get("text", "") for s in script.scenes)
+            
+            book_author = None
+            takeaways = None
+            content_type = script.content_type if script else "daily_update"
+            
+            if content_type == "book_review" and article.book_source_id:
+                book = article.book_source
+                if book:
+                    book_author = book.author
+                    takeaways = book.key_takeaways
+            
+            # Run async metadata generation in sync context
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
+            metadata = loop.run_until_complete(
+                service.generate_metadata(
+                    article_title=article.title,
+                    article_description=article.description or article.summary or "",
+                    script_content=script_text,
+                    content_type=content_type,
+                    book_author=book_author,
+                    takeaways=takeaways,
+                )
+            )
+            
+            # Persist to video record
+            video.youtube_title = metadata.title
+            video.youtube_description = metadata.description
+            video.youtube_tags = metadata.tags
+            db.commit()
+            
+            desc_len = len(metadata.description) if metadata.description else 0
+            tags_len = len(", ".join(metadata.tags)) if metadata.tags else 0
+            logger.info(
+                f"[SEO] Auto-generated metadata for video {video_id}: "
+                f"title='{metadata.title[:50]}...' "
+                f"desc={desc_len} chars, "
+                f"tags={tags_len} chars ({len(metadata.tags or [])} tags), "
+                f"hashtags={len(metadata.hashtags or [])} hashtags"
+            )
+            
+        except Exception as e:
+            logger.error(f"[SEO] Auto-metadata generation failed for video {video_id}: {e}")
+            # Non-fatal — video is still usable, user can click AI Auto-Fill manually
 
 # Removed standalone function as logic is now in class methods

@@ -44,6 +44,7 @@ class Article(Base):
     feed_id = Column(Integer, ForeignKey("feeds.id"), nullable=True)  # Nullable for YouTube sources
     youtube_source_id = Column(Integer, ForeignKey("youtube_sources.id"), nullable=True)
     book_source_id = Column(Integer, ForeignKey("book_sources.id"), nullable=True)
+    viral_news_source_id = Column(Integer, ForeignKey("viral_news_sources.id"), nullable=True)
     
     # Article metadata
     title = Column(String, nullable=False)
@@ -90,6 +91,7 @@ class Article(Base):
     feed = relationship("Feed", back_populates="articles")
     youtube_source = relationship("YouTubeSource", back_populates="articles")
     book_source = relationship("BookSource", back_populates="articles")
+    viral_news_source = relationship("ViralNewsSource", back_populates="articles")
     scripts = relationship("Script", back_populates="article", cascade="all, delete-orphan")
 
 
@@ -266,13 +268,20 @@ class YouTubeSource(Base):
     duration_seconds = Column(Float, nullable=True)
     thumbnail_url = Column(String, nullable=True)
     
+    # Multi-platform support (Phase 3)
+    platform = Column(String, default="youtube")  # youtube, twitter, linkedin
+    downloaded_path = Column(String, nullable=True)  # Local path to downloaded video
+    
     # Transcript data
     transcript = Column(JSON, nullable=True)  # [{text, start, duration}, ...]
     transcript_language = Column(String, default="en")
+    transcript_source = Column(String, nullable=True)  # "youtube_captions" or "whisper"
+    transcript_segments = Column(JSON, nullable=True)  # [{text, start, end}, ...] structured
     
     # AI Analysis results
     insights = Column(JSON, nullable=True)  # List of KeyInsight objects
     video_summary = Column(Text, nullable=True)  # Full video summary
+    scene_summaries = Column(JSON, nullable=True)  # Per-segment summaries for captions
     summary_generated_at = Column(DateTime, nullable=True)
     analysis_status = Column(String, default="pending")  # pending, analyzing, completed, failed
     error_message = Column(Text, nullable=True)
@@ -312,3 +321,38 @@ class BookSource(Base):
     
     # Relationships
     articles = relationship("Article", back_populates="book_source", cascade="all, delete-orphan")
+
+
+class ViralNewsSource(Base):
+    """Viral news source for trending news video shorts."""
+    __tablename__ = "viral_news_sources"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    original_url = Column(String, unique=True, nullable=False, index=True)
+    
+    # Article metadata
+    title = Column(String, nullable=False)
+    source_name = Column(String, nullable=True)  # CNN, BBC, etc.
+    published_at = Column(DateTime, nullable=True)
+    description = Column(Text, nullable=True)
+    content_preview = Column(Text, nullable=True)  # First ~3000 chars
+    image_url = Column(String, nullable=True)  # Hero image
+    news_category = Column(String, nullable=True)  # Technology, Business, Politics, etc.
+    
+    # AI Virality Analysis
+    virality_score = Column(Float, nullable=True)  # 1-10
+    virality_reasons = Column(JSON, nullable=True)  # ["reason1", "reason2", ...]
+    suggested_angles = Column(JSON, nullable=True)  # Video angle ideas
+    key_facts = Column(JSON, nullable=True)  # Extracted key facts
+    target_audience = Column(String, nullable=True)
+    emotional_hook = Column(String, nullable=True)
+    
+    # Status
+    analysis_status = Column(String, default="pending")  # pending, analyzing, completed, failed
+    error_message = Column(Text, nullable=True)
+    
+    created_at = Column(DateTime, default=_utcnow)
+    analyzed_at = Column(DateTime, nullable=True)
+    
+    # Relationships
+    articles = relationship("Article", back_populates="viral_news_source", cascade="all, delete-orphan")
