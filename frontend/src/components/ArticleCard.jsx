@@ -1,5 +1,15 @@
 import './ArticleCard.css';
 
+// Safely extract a display string from a key_point entry.
+// key_points can be plain strings OR ranked-metadata objects
+// (e.g. { title, key_fact, company, ... } stored by the Daily Digest flow).
+function getPointText(point) {
+    if (typeof point === 'string') return point;
+    if (!point || typeof point !== 'object') return String(point ?? '');
+    // Prefer the most descriptive field in ranked-metadata objects
+    return point.key_fact || point.title || point.description || JSON.stringify(point);
+}
+
 export default function ArticleCard({ article, selected, onSelect }) {
     const getStatusClass = (status) => {
         switch (status) {
@@ -62,7 +72,7 @@ export default function ArticleCard({ article, selected, onSelect }) {
                     <strong>Key Points:</strong>
                     <ul>
                         {article.key_points.slice(0, 2).map((point, idx) => (
-                            <li key={idx}>{point}</li>
+                            <li key={idx}>{getPointText(point)}</li>
                         ))}
                     </ul>
                 </div>

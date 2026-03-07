@@ -75,17 +75,72 @@ class ViralNewsService:
             "politics": "politics government policy election",
             "elon_musk": "Elon Musk Tesla SpaceX xAI",
             "humanoid": "humanoid robot robotics bipedal autonomous",
+            "world": (
+                "international global breaking news crisis conflict diplomacy "
+                "war protest economy summit UN NATO G7 election foreign"
+            ),
         }
+
+        # China uses targeted sub-queries (single long query exceeds NewsAPI limits)
+        CHINA_SUB_QUERIES = [
+            "China Xi Jinping Beijing CCP policy",
+            "China economy military Taiwan South China Sea",
+            "Huawei China technology trade sanctions",
+        ]
 
         try:
             service = NewsAPIService()
             articles = []
 
-            # Normalize category
-            cat_key = (category or "").lower().strip().replace(" ", "_")
+            # Normalize category — strip non-ascii (emoji) so '🌍 world' → 'world'
+            raw_cat = (category or "").lower().strip()
+            cat_key = "".join(c for c in raw_cat if c.isascii()).strip().replace(" ", "_")
 
-            if cat_key in EXTENDED_CATEGORY_QUERIES:
-                # Extended category → use search query instead of category param
+            if cat_key == "world":
+                # World strategy: 3 focused keyword searches covering different aspects
+                # of global news (country top-headlines fail on NewsAPI free plan)
+                world_sub_queries = [
+                    f"{query} world crisis war conflict diplomacy" if query else "world crisis war conflict diplomacy ceasefire",
+                    f"{query} international news global summit UN NATO" if query else "international news global summit UN NATO sanctions",
+                    f"{query} breaking news foreign protest election coup" if query else "breaking news foreign protest election coup revolution",
+                ]
+                per_query = max(10, page_size)
+                for sub_q in world_sub_queries:
+                    try:
+                        search_results = service.search_articles(
+                            query=sub_q,
+                            sort_by="publishedAt",
+                            page_size=per_query,
+                        )
+                        articles.extend(search_results.get("articles", []))
+                    except Exception as sub_err:
+                        logger.warning(f"World sub-query failed [{sub_q[:40]}]: {sub_err}")
+
+                logger.info(f"World category → fetched {len(articles)} raw articles from {len(world_sub_queries)} targeted searches")
+
+            elif cat_key == "china":
+                # China strategy: 3 focused sub-queries (single long query fails on NewsAPI)
+                china_queries = [
+                    f"{query} China Xi Jinping Beijing CCP policy" if query else CHINA_SUB_QUERIES[0],
+                    f"{query} China economy military Taiwan" if query else CHINA_SUB_QUERIES[1],
+                    f"{query} Huawei China technology trade" if query else CHINA_SUB_QUERIES[2],
+                ]
+                per_query = max(10, page_size)
+                for sub_q in china_queries:
+                    try:
+                        search_results = service.search_articles(
+                            query=sub_q,
+                            sort_by="publishedAt",
+                            page_size=per_query,
+                        )
+                        articles.extend(search_results.get("articles", []))
+                    except Exception as sub_err:
+                        logger.warning(f"China sub-query failed [{sub_q[:40]}]: {sub_err}")
+
+                logger.info(f"China category → fetched {len(articles)} raw articles from {len(china_queries)} targeted searches")
+
+            elif cat_key in EXTENDED_CATEGORY_QUERIES:
+                # Other extended categories → use search query instead of category param
                 search_query = EXTENDED_CATEGORY_QUERIES[cat_key]
                 # Combine with user query if provided
                 if query:
@@ -98,7 +153,7 @@ class ViralNewsService:
                 articles.extend(search_results.get("articles", []))
                 logger.info(f"Extended category '{cat_key}' → search query: '{search_query}'")
 
-            else:
+            else:  # Standard categories or bare query
                 # Standard category or no category → use top-headlines
                 api_category = cat_key if cat_key in NEWSAPI_CATEGORIES else None
                 if category or not query:

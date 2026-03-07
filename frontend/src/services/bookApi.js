@@ -82,13 +82,14 @@ export async function generateBookScript(bookId, angleIndex = 0, customAngle = n
  * Chains: Article → Script → TTS → Video Render.
  * Now supports reviewed script_id, tts_provider, and voice selection.
  */
-export async function generateBookVideo(bookId, angleIndex = 0, customAngle = null, projectFolder = null, scriptId = null, ttsProvider = null, voice = null, backgroundMode = 'auto', imageSource = 'stock', videoSource = 'stock') {
+export async function generateBookVideo(bookId, angleIndex = 0, customAngle = null, projectFolder = null, scriptId = null, ttsProvider = null, voice = null, backgroundMode = 'auto', imageSource = 'stock', videoSource = 'stock', veoStyle = 'auto') {
     const body = {
         angle_index: angleIndex,
         custom_angle: customAngle,
         background_mode: backgroundMode,
         image_source: imageSource,
-        video_source: videoSource
+        video_source: videoSource,
+        veo_style: veoStyle,
     };
 
     if (projectFolder) {

@@ -20,7 +20,9 @@ from app.routers import (
     youtube_router,
     book_router,
     viral_news_router,
+    cost_router,
 )
+from app.routers import daily_digest_router
 from app.utils.logger import setup_logging, get_logger
 
 logger = get_logger(__name__)
@@ -76,6 +78,8 @@ app.include_router(health.router)
 app.include_router(youtube_router.router)
 app.include_router(book_router.router)
 app.include_router(viral_news_router.router)
+app.include_router(cost_router.router)
+app.include_router(daily_digest_router.router)
 
 
 

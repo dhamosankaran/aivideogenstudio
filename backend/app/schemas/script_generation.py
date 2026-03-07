@@ -9,6 +9,9 @@ class Scene(BaseModel):
     duration_estimate: Optional[int] = Field(default=None, description="Estimated duration for this scene in seconds")
     visual_style: Optional[str] = Field(default=None, description="Visual style hint (tech_modern, corporate, etc.)")
     transition_hint: Optional[str] = Field(default="fade", description="Transition type to use before this scene: 'fade' (0.8s crossfade), 'cut' (hard cut), or 'match_cut' (0.3s quick dissolve)")
+    # Daily Digest fields — populated by the AI Insider prompt
+    story_index: Optional[int] = Field(default=0, description="Story beat index (1-N for stories, 0 for hook/thread/cta)")
+    company: Optional[str] = Field(default=None, description="Company or topic name for this story beat")
 
 class ScriptOutput(BaseModel):
     hook: str = Field(..., description="An attention-grabbing opening sentence (0-5 seconds)")

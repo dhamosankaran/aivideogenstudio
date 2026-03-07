@@ -2,6 +2,9 @@
 .DS_Store
 .Thumbs.db
 
+# Personal Claude Code preferences (not for team)
+CLAUDE.local.md
+
 # Environment variables
 .env
 .env.local

@@ -3,9 +3,10 @@
     bottom: 0;
     left: 0;
     right: 0;
-    background: white;
-    border-top: 2px solid #3b82f6;
-    box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.1);
+    background: rgba(13, 17, 38, 0.97);
+    backdrop-filter: blur(12px);
+    border-top: 1px solid rgba(99, 102, 241, 0.35);
+    box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.45);
     z-index: 1000;
     animation: slideUp 0.3s ease-out;
 }
@@ -43,7 +44,7 @@
 
 .selection-info .label {
     font-size: 1rem;
-    color: #6b7280;
+    color: rgba(255, 255, 255, 0.6);
 }
 
 .actions {
@@ -61,21 +62,22 @@
 .content-type-selector label {
     font-size: 0.875rem;
     font-weight: 600;
-    color: #374151;
+    color: rgba(255, 255, 255, 0.8);
     white-space: nowrap;
 }
 
 .content-type-select {
     padding: 0.625rem 1rem;
-    border: 1px solid #d1d5db;
+    border: 1px solid rgba(255, 255, 255, 0.15);
     border-radius: 6px;
     font-size: 0.875rem;
-    background: white;
+    background: rgba(255, 255, 255, 0.08);
+    color: #fff;
     cursor: pointer;
 }
 
 .content-type-select:disabled {
-    background: #f3f4f6;
+    background: rgba(255, 255, 255, 0.04);
     cursor: not-allowed;
 }
 

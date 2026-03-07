@@ -17,6 +17,43 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+class PromptRefiner:
+    """Translates abstract psychological/book concepts into vivid visual metaphors.
+
+    Heuristic keyword mapping — zero extra LLM cost.
+    Unknown concepts pass through unchanged (identity fallback).
+    """
+
+    METAPHOR_MAP = {
+        "loss aversion": "person staring at a broken piggy bank with intense regret, dramatic shadows",
+        "compounding": "towering stack of gold coins gleaming in warm morning light, dramatic scale",
+        "atomic habits": "tiny seed cracking through concrete, sprouting green shoot, macro photography",
+        "identity": "person gazing at own reflection in a rain-soaked window, cinematic blue tones",
+        "motivation": "lone runner sprinting toward a sunrise on an empty road, long lens compression",
+        "procrastination": "person frozen at a desk surrounded by clocks, time-lapse blur effect",
+        "fear": "silhouette standing at edge of cliff looking into vast misty valley, dramatic fog",
+        "success": "climber reaching mountain summit, arms raised, golden hour light",
+        "failure": "chess pieces scattered on floor after knocked-over board, shallow depth of field",
+        "wealth": "old library with towering bookshelves, warm amber light, dust motes",
+        "discipline": "athlete training alone in an empty gym before dawn, harsh fluorescent lighting",
+        "mindset": "butterfly emerging from cocoon in extreme close-up, macro lens, vibrant colors",
+        "decision": "fork in a misty forest road, cinematic color grade, leading lines",
+        "time": "hourglass with golden sand, shallow depth of field, dark moody background",
+        "power": "hand holding a glowing ember in darkness, bokeh background",
+    }
+
+    def refine(self, concept: str) -> str:
+        """Return vivid visual metaphor if concept matches a known pattern, else return as-is."""
+        lower = concept.lower()
+        for key, metaphor in self.METAPHOR_MAP.items():
+            if key in lower:
+                return metaphor
+        return concept
+
+
+_prompt_refiner = PromptRefiner()
+
+
 class GeminiImageService:
     """
     Service for generating images using Gemini's image generation API.
@@ -194,9 +231,10 @@ class GeminiImageService:
             f"",
         ]
         
-        # Primary visual direction — use visual_cues as the Nano Banana prompt
+        # Primary visual direction — refine abstract concepts into vivid visual metaphors
         if visual_cues:
-            prompt_parts.append(f"VISUAL METAPHOR: {visual_cues}")
+            refined_cues = _prompt_refiner.refine(visual_cues)
+            prompt_parts.append(f"VISUAL METAPHOR: {refined_cues}")
         
         # Add narration context for emotional grounding
         if scene_text:

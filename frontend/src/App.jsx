@@ -2,7 +2,7 @@ import { lazy, Suspense, useState } from 'react';
 import { Routes, Route, NavLink, Navigate } from 'react-router-dom';
 import { ProjectProvider } from './context/ProjectContext';
 import {
-  Zap,
+  Clapperboard,
   Library,
   Youtube,
   BookOpen,
@@ -10,19 +10,23 @@ import {
   FileText,
   Film,
   BarChart3,
+  DollarSign,
   PanelLeftClose,
   PanelLeft,
+  Newspaper,
 } from 'lucide-react';
 import './App.css';
 
 // Lazy load all page components
 const ContentLibrary = lazy(() => import('./pages/ContentLibrary'));
+const DailyDigest = lazy(() => import('./pages/DailyDigest'));
 const YouTubeImport = lazy(() => import('./pages/YouTubeImport'));
 const BookReview = lazy(() => import('./pages/BookReview'));
 const ViralNews = lazy(() => import('./pages/ViralNews'));
 const ScriptReview = lazy(() => import('./pages/ScriptReview'));
 const VideoValidation = lazy(() => import('./pages/VideoValidation'));
 const Dashboard = lazy(() => import('./pages/Dashboard'));
+const CostDashboard = lazy(() => import('./pages/CostDashboard'));
 
 function LoadingFallback() {
   return (
@@ -35,12 +39,14 @@ function LoadingFallback() {
 
 const NAV_ITEMS = [
   { to: '/content', icon: Library, label: 'Content Library', section: 'content' },
+  { to: '/daily-digest', icon: Newspaper, label: 'Daily Digest', section: 'content' },
   { to: '/youtube', icon: Youtube, label: 'YouTube Import', section: 'content' },
   { to: '/books', icon: BookOpen, label: 'Book Reviews', section: 'content' },
   { to: '/viral', icon: Flame, label: 'Viral News', section: 'content' },
   { to: '/scripts', icon: FileText, label: 'Script Review', section: 'create' },
   { to: '/videos', icon: Film, label: 'Video Validation', section: 'create' },
   { to: '/dashboard', icon: BarChart3, label: 'Dashboard', section: 'overview' },
+  { to: '/costs', icon: DollarSign, label: 'Cost Tracker', section: 'overview' },
 ];
 
 function App() {
@@ -53,7 +59,7 @@ function App() {
         <nav className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
           <div className="sidebar-brand">
             <div className="sidebar-brand-icon">
-              <Zap size={18} />
+              <Clapperboard size={20} />
             </div>
             <span className="sidebar-brand-text">AIVideoGen</span>
           </div>
@@ -118,12 +124,14 @@ function App() {
           <Suspense fallback={<LoadingFallback />}>
             <Routes>
               <Route path="/content" element={<ContentLibrary />} />
+              <Route path="/daily-digest" element={<DailyDigest />} />
               <Route path="/youtube" element={<YouTubeImport />} />
               <Route path="/books" element={<BookReview />} />
               <Route path="/viral" element={<ViralNews />} />
               <Route path="/scripts" element={<ScriptReview />} />
               <Route path="/videos" element={<VideoValidation />} />
               <Route path="/dashboard" element={<Dashboard />} />
+              <Route path="/costs" element={<CostDashboard />} />
               <Route path="/" element={<Navigate to="/content" replace />} />
               <Route path="*" element={<Navigate to="/content" replace />} />
             </Routes>

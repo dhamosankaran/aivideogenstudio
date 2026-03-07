@@ -13,6 +13,7 @@ import os
 import math
 import json
 import hashlib
+import time
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple, Dict, Any
@@ -33,6 +34,11 @@ from moviepy import (
 
 from app.models import Script, Audio, Video, Article
 from app.config import settings
+
+# Scenes that receive Veo AI video (0-indexed). For book reviews, only the 3 most
+# cinematic beats get Veo — Relatable Story (3), Famous Example (4), Cheat Code (6).
+# Other scenes use Gemini AI images with Ken Burns, which is faster and equally cinematic.
+VEO_BOOK_REVIEW_SCENES: frozenset = frozenset([2, 3, 5])  # scenes 3, 4, 6 (1-indexed)
 from app.services.whisper_service import WhisperService
 from app.services.image_search_orchestrator import ImageSearchOrchestrator
 from app.services.background_music_service import BackgroundMusicService
@@ -84,14 +90,15 @@ class EnhancedVideoCompositionService:
         logger.info(f"Image sources: {self.image_search.get_provider_status()}")
         
     def create_video_task(
-        self, 
-        script_id: int, 
+        self,
+        script_id: int,
         audio_id: Optional[int] = None,
         background_style: str = "scenes",  # "scenes" or "gradient"
         project_folder: Optional[str] = None,
         background_mode: str = "auto",  # auto, images_only, videos_only, mixed
         image_source: str = "stock",  # stock, ai_generated, auto
-        video_source: str = "stock"  # stock, veo
+        video_source: str = "stock",  # stock, veo
+        veo_style: str = "auto"  # cinematic, whiteboard, illustration, auto
     ) -> Video:
         """Create a video record and return it (before processing)."""
         # Fetch Script
@@ -127,7 +134,8 @@ class EnhancedVideoCompositionService:
                 "use_images": bool(self.image_search.unsplash or self.image_search.pexels),
                 "project_folder": project_folder,
                 "image_source": image_source,
-                "video_source": video_source
+                "video_source": video_source,
+                "veo_style": veo_style,
             },
             # Auto-populate metadata from script
             youtube_title=script.catchy_title,
@@ -289,7 +297,9 @@ class EnhancedVideoCompositionService:
         
         # Detect content type early for image enrichment decisions
         content_type_hint = getattr(script, 'content_type', '') or getattr(script.article, 'suggested_content_type', '') or ''
-        is_book_review = (content_type_hint == "book_review")
+        is_book_review  = (content_type_hint == "book_review")
+        is_viral_news   = (content_type_hint == "viral_news")
+        is_daily_digest = (content_type_hint == "daily_update")
         
         # --- Topic subfolder (e.g. "books", "news", "tech") ---
         topic_subfolder = get_project_subfolder(content_type_hint or 'daily_update')
@@ -340,6 +350,8 @@ class EnhancedVideoCompositionService:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
         
+        scene_images = {}  # Map scene index -> image path (populated by book/viral_news paths)
+
         if is_book_review:
             logger.info("[Book V3] Project-dir-first image mode")
             
@@ -351,34 +363,61 @@ class EnhancedVideoCompositionService:
                 book_author = book.author or ''
                 book_title_clean = book.title or article_title
             
+            # Read image/video source settings early (needed for cover generation decision)
+            image_source = settings.get("image_source", "stock")
+            video_source_pref = settings.get("video_source", "stock")
+
             # Download book cover directly to project dir (scene 1)
             if not prefetched_images:
                 if script.article and hasattr(script.article, 'book_source') and script.article.book_source:
                     book = script.article.book_source
                     if book.cover_url:
                         cover_path = self._download_book_cover(
-                            book.cover_url, book.title, 
+                            book.cover_url, book.title,
                             output_dir=project_image_dir
                         )
                         if cover_path:
                             prefetched_images.insert(0, cover_path)
                             logger.info(f"[Book V3] Cover saved to project: {cover_path.name}")
-            
+
+            # AI image mode: generate Gemini AI book cover for Scene 1 (better quality than low-res thumbnail)
+            if image_source == "ai_generated" and self.image_search.gemini_image and book_title_clean:
+                ai_cover_dest = project_image_dir / "scene_1.png"
+                if not ai_cover_dest.exists():
+                    author_part = f' by {book_author}' if book_author else ''
+                    cover_ai_prompt = (
+                        f'Cinematic photorealistic image for a book review video about '
+                        f'"{book_title_clean}"{author_part}. '
+                        'The physical book is prominently featured — held in hands, '
+                        'displayed on a reading desk, or placed in a cozy library nook. '
+                        'Warm golden-hour lighting, shallow depth of field, vertical 9:16 composition. '
+                        'Rich colors, inviting atmosphere. No text overlays, no watermarks. '
+                        '8K cinematic quality.'
+                    )
+                    ai_cover = loop.run_until_complete(
+                        self.image_search.gemini_image.generate_image(
+                            prompt=cover_ai_prompt,
+                            output_path=ai_cover_dest
+                        )
+                    )
+                    if ai_cover:
+                        if prefetched_images:
+                            prefetched_images[0] = ai_cover
+                        else:
+                            prefetched_images.insert(0, ai_cover)
+                        logger.info(f"[Book AI Cover] Scene 1: Gemini AI cover → {ai_cover_dest.name}")
+
             # Build entity-grounding context prefix (quoted for exact phrase matching)
             entity_context = f'"{book_title_clean}"'
             if book_author:
                 entity_context = f'"{book_title_clean}" {book_author}'
             logger.info(f"[Book V3] Entity context: {entity_context}")
-            
-            # Per-scene image search → saved directly to project dir
-            scene_images = {}  # Map scene index -> image path
-            image_source = settings.get("image_source", "stock")
-            
-            # When AI-generated images are selected, force images_only background mode
-            # so the render loop uses AI images as backgrounds (not stock videos)
-            if image_source == "ai_generated":
+
+            # Force images_only ONLY when AI images are selected WITHOUT Veo.
+            # When Veo is also requested, let Veo run first and use AI images as fallback.
+            if image_source == "ai_generated" and video_source_pref != "veo":
                 settings["background_mode"] = "images_only"
-                logger.info("[Book V3] AI image source selected → forcing background_mode=images_only")
+                logger.info("[Book V3] AI-only mode → forcing images_only (Veo not requested)")
             
             for i, scene in enumerate(scenes_with_timing):
                 # Scene 1 (Hook) uses the cover
@@ -509,21 +548,329 @@ class EnhancedVideoCompositionService:
             # Summary
             unique_count = len(set(str(v) for v in scene_images.values()))
             logger.info(f"[Book V3] {unique_count} unique images across {len(scene_images)} scenes in {project_image_dir}")
+        elif is_viral_news:
+            # ── Viral News: per-scene image mapping with entity grounding ──
+            # Same quality pipeline as book review — scene_images dict populated for
+            # images_only mode, AI fallback (priority 0.75), and asset validation.
+            import shutil as _shutil
+            image_source_vn = settings.get("image_source", "stock")
+            video_source_vn = settings.get("video_source", "stock")
+
+            # AI-only mode: no stock videos needed
+            if image_source_vn == "ai_generated" and video_source_vn != "veo":
+                settings["background_mode"] = "images_only"
+                logger.info("[VN] AI-only mode → forcing images_only")
+
+            for i, scene in enumerate(scenes_with_timing):
+                # Reuse cached image from previous run (skip for ai_generated)
+                if image_source_vn != "ai_generated":
+                    cached = project_image_dir / f"scene_{i+1}.jpg"
+                    if cached.exists():
+                        scene_images[i] = cached
+                        logger.info(f"[VN] Scene {i+1}: Reusing cached image")
+                        continue
+
+                # Human presence boost when narration addresses the viewer directly
+                scene_text_vn = (scene.get("text", "") or "").lower()
+                use_human_boost_vn = any(
+                    p in scene_text_vn.split() for p in ("you", "your", "we", "our")
+                )
+
+                found = False
+
+                # ── Try Gemini AI image generation first ──
+                if image_source_vn in ("ai_generated", "auto") and self.image_search.gemini_image:
+                    visual_cues_vn = scene.get("visual_cues", "")
+                    if visual_cues_vn:
+                        ai_prompt_vn = (
+                            f"Photojournalistic cinematic image for a viral news short.\n"
+                            f"STORY: {article_title}\n"
+                            f"SCENE {i+1} of {len(scenes_with_timing)}: "
+                            f"{scene.get('text', '')[:120]}\n"
+                            f"VISUAL DIRECTION: {visual_cues_vn}\n"
+                            "Style: Vertical 9:16, photojournalistic, raw lighting, "
+                            "motion blur, 8k, sharp news aesthetic."
+                        )
+                        try:
+                            ai_img = loop.run_until_complete(
+                                self.image_search.search_image_async(
+                                    keywords=[f"{article_title} scene {i+1}"],
+                                    topic_query=None,
+                                    orientation="portrait",
+                                    content_type=content_type_hint,
+                                    output_dir=project_image_dir,
+                                    ai_prompt=ai_prompt_vn,
+                                )
+                            )
+                            if ai_img:
+                                dest = project_image_dir / f"scene_{i+1}.png"
+                                if ai_img != dest:
+                                    _shutil.copy(ai_img, dest)
+                                scene_images[i] = dest
+                                found = True
+                                logger.info(f"[VN AI] Scene {i+1}: Generated → {dest.name}")
+                        except Exception as e:
+                            logger.warning(f"[VN AI] Scene {i+1} generation failed: {e}")
+
+                # ── Stock image fallback with entity grounding ──
+                if not found:
+                    keywords_vn = scene.get("image_keywords", [])
+                    for kw in keywords_vn[:2]:
+                        grounded = f"{article_title} {kw}" if article_title else kw
+                        try:
+                            stock_img = loop.run_until_complete(
+                                self.image_search.search_image_async(
+                                    keywords=[kw],
+                                    topic_query=grounded[:120],
+                                    orientation="portrait",
+                                    content_type=content_type_hint,
+                                    output_dir=project_image_dir,
+                                    human_presence_boost=use_human_boost_vn,
+                                )
+                            )
+                            if stock_img:
+                                dest = project_image_dir / f"scene_{i+1}.jpg"
+                                if stock_img != dest:
+                                    _shutil.copy(stock_img, dest)
+                                scene_images[i] = dest
+                                found = True
+                                logger.info(f"[VN] Scene {i+1}: Stock → {dest.name}")
+                                break
+                        except Exception as e:
+                            logger.warning(f"[VN] Scene {i+1} stock search failed: {e}")
+
+            logger.info(f"[VN] {len(scene_images)}/{len(scenes_with_timing)} scenes have images")
+
+        elif is_daily_digest:
+            # ── Daily Digest: per-scene image mapping, grounded by story company ──
+            # Mirrors the viral_news pipeline. Each scene gets an image grounded to
+            # its specific news story (company name + visual_cues + image_keywords).
+            import shutil as _shutil_dd
+            image_source_dd = settings.get("image_source", "stock")
+            video_source_dd = settings.get("video_source", "stock")
+
+            # AI-only mode: no stock videos needed
+            if image_source_dd == "ai_generated" and video_source_dd != "veo":
+                settings["background_mode"] = "images_only"
+                logger.info("[DD] AI-only mode → forcing images_only")
+
+            # ── Static brand image for hook / thread / CTA scenes ──────────
+            _AI_INSIDER_IMG = Path("data/projects/news/AIInsider.png")
+            _COMPANY_LOGOS_DIR = Path("assets/company_logos")
+            _COMPANY_LOGOS_DIR.mkdir(parents=True, exist_ok=True)
+
+            # ── Pre-identify thread+insight pair (shared image) ─────────────
+            # Consecutive story_index=0 scenes that are NOT hook (i=0) and NOT CTA
+            # (last scene) — typically the "connecting thread" + "impact/insight" pair.
+            # We generate ONE image for the first in the pair and reuse for the rest.
+            n_scenes = len(scenes_with_timing)
+            last_idx = n_scenes - 1
+            _mid_structural = [
+                i for i, sc in enumerate(scenes_with_timing)
+                if sc.get("story_index", 0) == 0 and i != 0 and i != last_idx
+            ]
+            # Map each scene in the pair → the index whose image it will share
+            # (first scene generates, subsequent ones reuse)
+            _shared_image_map: dict[int, int] = {}  # scene_idx → leader_idx
+            if len(_mid_structural) >= 2:
+                leader = _mid_structural[0]
+                for follower in _mid_structural[1:]:
+                    _shared_image_map[follower] = leader
+                logger.info(
+                    f"[DD] Shared image group: scenes {[i+1 for i in _mid_structural]} "
+                    f"(saves {len(_mid_structural)-1} Gemini call(s))"
+                )
+
+            for i, scene in enumerate(scenes_with_timing):
+                # Reuse cached image from a previous run (skip for ai_generated)
+                if image_source_dd != "ai_generated":
+                    cached = project_image_dir / f"scene_{i+1}.jpg"
+                    if cached.exists():
+                        scene_images[i] = cached
+                        logger.info(f"[DD] Scene {i+1}: Reusing cached image")
+                        continue
+
+                # Extract scene metadata for grounded prompts
+                scene_text_dd   = (scene.get("text", "") or "")
+                visual_cues_dd  = (scene.get("visual_cues", "") or "")
+                company_dd      = (scene.get("company", "") or "")
+                story_index_dd  = scene.get("story_index", 0)  # 0 = hook/thread/cta, >0 = story beat
+                keywords_dd     = scene.get("image_keywords", [])
+
+                # ── Shared image reuse (insight/thread pair) ──
+                if i in _shared_image_map:
+                    leader_i = _shared_image_map[i]
+                    leader_img = scene_images.get(leader_i)
+                    if leader_img and Path(leader_img).exists():
+                        dest = project_image_dir / f"scene_{i+1}{Path(leader_img).suffix}"
+                        _shutil_dd.copy(leader_img, dest)
+                        scene_images[i] = dest
+                        logger.info(
+                            f"[DD] Scene {i+1} (insight): Reusing scene {leader_i+1} "
+                            f"image → saved 1 Gemini call"
+                        )
+                        continue
+
+
+
+                # ── CTA (last scene only) → use static AIInsider.png brand image ──
+                # Hook and insight/thread scenes get unique Gemini images since they
+                # each have specific visual cues (AI logos collage, data centers, etc.)
+                is_cta_scene = (story_index_dd == 0 and i == len(scenes_with_timing) - 1)
+                if is_cta_scene and _AI_INSIDER_IMG.exists():
+                    dest = project_image_dir / f"scene_{i+1}.png"
+                    _shutil_dd.copy(_AI_INSIDER_IMG, dest)
+                    scene_images[i] = dest
+                    logger.info(f"[DD] Scene {i+1} (CTA): Using static AIInsider.png brand image")
+                    continue
+
+                found = False
+
+                # ── Try company icon logo first (assets/company_logos/openai.png) ──
+                if company_dd:
+                    company_slug = company_dd.lower().replace(" ", "_").replace("-", "_")
+                    for ext in (".png", ".jpg", ".jpeg"):
+                        logo_path = _COMPANY_LOGOS_DIR / f"{company_slug}{ext}"
+                        if logo_path.exists():
+                            dest = project_image_dir / f"scene_{i+1}{ext}"
+                            _shutil_dd.copy(logo_path, dest)
+                            scene_images[i] = dest
+                            found = True
+                            logger.info(f"[DD] Scene {i+1} ({company_dd}): Using logo {logo_path.name}")
+                            break
+
+                # ── Try Gemini AI image generation (story beats only) ──
+                if not found and image_source_dd in ("ai_generated", "auto") and self.image_search.gemini_image:
+                    # Build a grounded photojournalistic prompt
+                    if story_index_dd and story_index_dd > 0 and company_dd:
+                        subject_line = f"COMPANY/TOPIC: {company_dd}"
+                    else:
+                        subject_line = f"STORY: {article_title}"
+
+                    visual_dir = visual_cues_dd if visual_cues_dd else (
+                        keywords_dd[0] if keywords_dd else "news studio photojournalistic"
+                    )
+
+                    # AI Insider dark cinematic style prefix — mandatory for all Daily Digest images
+                    _DD_STYLE_PREFIX = (
+                        "Dark cinematic lighting, shallow depth of field, high-tech bokeh, "
+                        "midnight blue and obsidian color palette, hyper-realistic textures, "
+                        "professional tech journalism style. "
+                        "No overlaid text. No watermarks. No bright office. No generic stock."
+                    )
+
+                    # Topic-aware visual direction (maps key AI companies to specific compositions)
+                    _DD_TOPIC_MAP = {
+                        "openai": "glowing minimalist OpenAI logo on brushed titanium surface, dimly lit research lab background",
+                        "google": "Google DeepMind neural network dark server room, blue holographic glow, obsidian surface",
+                        "deepmind": "Google DeepMind neural network dark server room, blue holographic glow, obsidian surface",
+                        "anthropic": "Claude AI symbol on dark carbon surface, cyan glow, minimal tech lab",
+                        "meta": "Meta AI holographic interface, dark studio, midnight blue gradient",
+                        "microsoft": "Microsoft Azure dark data center, electric blue light traces, obsidian",
+                        "nvidia": "NVIDIA GPU chip on dark motherboard, green circuit glow, hyper-realistic macro",
+                        "robot": "robotic hand delicately holding silicon chip, intricate wiring visible, laboratory setting, midnight blue",
+                        "robotics": "robotic hand delicately holding silicon chip, intricate wiring visible, laboratory setting, midnight blue",
+                        "fund": "venture capital dark boardroom, holographic AI projection on obsidian table, dramatic rim lighting",
+                        "policy": "capitol building AI regulation dramatic storm sky, dark cinematic",
+                        "regulation": "capitol building AI regulation dramatic storm sky, dark cinematic",
+                    }
+
+                    company_lower = company_dd.lower() if company_dd else ""
+                    topic_visual = next(
+                        (v for k, v in _DD_TOPIC_MAP.items() if k in company_lower or k in visual_dir.lower()),
+                        None
+                    )
+
+                    if topic_visual:
+                        composition = topic_visual
+                    elif company_dd:
+                        composition = f"{company_dd} product announcement, dark cinematic obsidian surface, high-tech bokeh"
+                    else:
+                        composition = visual_dir or "AI news investigation, dark cinematic, midnight blue"
+
+                    ai_prompt_dd = (
+                        f"{_DD_STYLE_PREFIX}\n"
+                        f"{subject_line}\n"
+                        f"SCENE {i+1} narration: {scene_text_dd[:150]}\n"
+                        f"COMPOSITION: {composition}\n"
+                    )
+
+                    # If this is the thread scene (leader of the shared pair), blend in the
+                    # insight scene's visual cues to produce an image that works for both
+                    _followers = [fi for fi, li in _shared_image_map.items() if li == i]
+                    if _followers:
+                        next_scene = scenes_with_timing[_followers[0]]
+                        next_cues = (next_scene.get("visual_cues") or "")[:120]
+                        if next_cues:
+                            ai_prompt_dd += f"ALSO COVERS NEXT SCENE: {next_cues}\n"
+                    ai_prompt_dd += "Vertical 9:16 portrait orientation. No overlaid text."
+
+
+                    try:
+                        ai_img_dd = loop.run_until_complete(
+                            self.image_search.search_image_async(
+                                keywords=[f"{company_dd or article_title} scene {i+1}"],
+                                topic_query=None,
+                                orientation="portrait",
+                                content_type=content_type_hint,
+                                output_dir=project_image_dir,
+                                ai_prompt=ai_prompt_dd,
+                            )
+                        )
+                        if ai_img_dd:
+                            dest = project_image_dir / f"scene_{i+1}.png"
+                            if ai_img_dd != dest:
+                                _shutil_dd.copy(ai_img_dd, dest)
+                            scene_images[i] = dest
+                            found = True
+                            logger.info(f"[DD AI] Scene {i+1} ({company_dd or 'story'}): Gemini → {dest.name}")
+                    except Exception as e:
+                        logger.warning(f"[DD AI] Scene {i+1} Gemini generation failed: {e}")
+
+                # ── Stock image fallback with company grounding ──
+                if not found:
+                    for kw in keywords_dd[:2]:
+                        grounded_kw = f"{company_dd} {kw}" if company_dd else (
+                            f"{article_title} {kw}" if article_title else kw
+                        )
+                        try:
+                            stock_img_dd = loop.run_until_complete(
+                                self.image_search.search_image_async(
+                                    keywords=[kw],
+                                    topic_query=grounded_kw[:120],
+                                    orientation="portrait",
+                                    content_type=content_type_hint,
+                                    output_dir=project_image_dir,
+                                )
+                            )
+                            if stock_img_dd:
+                                dest = project_image_dir / f"scene_{i+1}.jpg"
+                                if stock_img_dd != dest:
+                                    _shutil_dd.copy(stock_img_dd, dest)
+                                scene_images[i] = dest
+                                found = True
+                                logger.info(f"[DD] Scene {i+1}: Stock ({grounded_kw[:60]}) → {dest.name}")
+                                break
+                        except Exception as e:
+                            logger.warning(f"[DD] Scene {i+1} stock search failed: {e}")
+
+            logger.info(f"[DD] {len(scene_images)}/{len(scenes_with_timing)} scenes have images")
+
         else:
-            # Non-book content: fetch images into project dir
+            # Generic non-viral non-book non-digest content: bulk prefetch up to 6 images
             all_keywords = []
             for scene in scenes_with_timing:
                 all_keywords.extend(scene.get("image_keywords", []))
-            
+
             # Remove duplicates while preserving order
             seen = set()
             unique_keywords = [k for k in all_keywords if not (k in seen or seen.add(k))]
-            
+
             # Search for up to 6 images, save to project dir
             for keyword in unique_keywords[:6]:
                 search_query = f"{article_title} {keyword}" if article_title else keyword
                 logger.info(f"[Pre-fetch] Searching: {search_query[:60]}...")
-                
+
                 try:
                     image_path = loop.run_until_complete(
                         self.image_search.search_image_async(
@@ -539,18 +886,22 @@ class EnhancedVideoCompositionService:
                         logger.info(f"[Pre-fetch] Got: {image_path.name}")
                 except Exception as e:
                     logger.warning(f"Pre-fetch failed for '{keyword}': {e}")
-            
+
             logger.info(f"Pre-fetched {len(prefetched_images)} images to {project_image_dir}")
-            scene_images = {}  # Not used for non-book content
+            scene_images = {}  # Not used for generic content
         
         # ===== PRE-RENDER: PLAN INTERRUPTS + VALIDATE ASSETS =====
         # Generate alternating Ken Burns directions (7-second reset logic)
         scene_directions = self.pattern_interrupt.get_scene_directions(len(scenes_with_timing))
         logger.info(f"[PatternInterrupt] Scene directions: {scene_directions}")
+
+        # Story beat timing tracker — used to build per-scene ticker overlay for Daily Digest.
+        # Each entry: {"company": str, "story_index": int, "start": float, "duration": float}
+        dd_story_beats: list = []
         
         # Validate all pre-fetched scene images exist before entering render loop
         # Prevents 'black screen' errors from stale paths or failed downloads
-        if is_book_review and scene_images:
+        if (is_book_review or is_viral_news or is_daily_digest) and scene_images:
             for idx in list(scene_images.keys()):
                 img_path = scene_images[idx]
                 if img_path and not Path(img_path).exists():
@@ -563,6 +914,7 @@ class EnhancedVideoCompositionService:
         
         # Create scene clips
         scene_clips = []
+        callout_clips = []  # Kinetic punch callouts (book review only)
         for i, scene in enumerate(scenes_with_timing):
             logger.info(f"Creating scene {i+1}/{len(scenes_with_timing)}")
             
@@ -577,7 +929,9 @@ class EnhancedVideoCompositionService:
             # ===== BACKGROUND MODE LOGIC =====
             # Read background_mode from render settings (auto, images_only, videos_only, mixed)
             background_mode = settings.get("background_mode", "auto")
-            logger.info(f"[Background] Mode: {background_mode} for scene {i+1}")
+            video_source = settings.get("video_source", "stock")  # read early so elif guards can use it
+            image_source_render = settings.get("image_source", "stock")  # used for AI image fallback
+            logger.info(f"[Background] Mode: {background_mode}, Video: {video_source}, Image: {image_source_render} for scene {i+1}")
             
             # Retention Logic: alternating push-in/pull-out Ken Burns direction
             kb_direction = scene_directions[i] if i < len(scene_directions) else "push_in"
@@ -587,36 +941,54 @@ class EnhancedVideoCompositionService:
             if is_book_review and i == 0 and i in scene_images:
                 image_path = scene_images[i]
                 logger.info(f"[Book V3] Scene 1 (Hook): Using book cover {image_path.name}")
-                bg_clip = self._create_ken_burns_clip(image_path, scene_duration, (w, h), direction=kb_direction)
+                bg_clip = self._create_ken_burns_clip(image_path, scene_duration, (w, h), direction=kb_direction, scene_index=i)
             elif background_mode == "images_only":
                 # Images only mode: use pre-fetched images, skip video search entirely
                 if i in scene_images:
                     image_path = scene_images[i]
                     logger.info(f"[Images Only] Scene {i+1}: Using image {image_path.name}")
-                    bg_clip = self._create_ken_burns_clip(image_path, scene_duration, (w, h), direction=kb_direction)
-            elif is_book_review and i in scene_images and not self.video_search:
-                # No video service available — use pre-fetched image
+                    bg_clip = self._create_ken_burns_clip(image_path, scene_duration, (w, h), direction=kb_direction, scene_index=i)
+            elif is_book_review and i in scene_images and not self.video_search and video_source != "veo":
+                # No video service available AND user didn't explicitly request Veo — use pre-fetched image
                 image_path = scene_images[i]
                 logger.info(f"[Book V3] Scene {i+1}: Using image (no video service) {image_path.name}")
-                bg_clip = self._create_ken_burns_clip(image_path, scene_duration, (w, h), direction=kb_direction)
+                bg_clip = self._create_ken_burns_clip(image_path, scene_duration, (w, h), direction=kb_direction, scene_index=i)
+            elif is_daily_digest and i in scene_images and not self.video_search and video_source != "veo":
+                # Daily Digest: no video service available — use per-scene Gemini/stock image with Ken Burns
+                image_path = scene_images[i]
+                logger.info(f"[DD] Scene {i+1}: Using image (no video service) {image_path.name}")
+                bg_clip = self._create_ken_burns_clip(image_path, scene_duration, (w, h), direction=kb_direction, scene_index=i)
             
             # PRIORITY 0.5: Try Veo AI video generation (if video_source is "veo")
-            video_source = settings.get("video_source", "stock")
-            if bg_clip is None and video_source == "veo" and self.veo_video and background_mode != "images_only":
+            # For book reviews: Veo only fires on the 3 most cinematic beats (scenes 3, 4, 6).
+            # Other scenes use Gemini AI images — faster, equally cinematic for those beats.
+            veo_allowed = (
+                not is_book_review              # non-book: Veo allowed on all scenes
+                or i in VEO_BOOK_REVIEW_SCENES  # book review: only scenes 3, 4, 6 (0-indexed: 2, 3, 5)
+            )
+            if is_book_review and video_source == "veo" and not veo_allowed:
+                logger.info(f"[Veo] Scene {i+1}: Skipping (not in VEO_BOOK_REVIEW_SCENES — AI image fallback used)")
+            if veo_allowed and bg_clip is None and video_source == "veo" and self.veo_video and background_mode != "images_only":
                 try:
                     scene_text_for_vid = scene.get("text", "")
                     visual_cues_for_vid = scene.get("visual_cues", "")
-                    veo_prompt = self.veo_video.build_scene_prompt(
+
+                    # Resolve style for this specific scene
+                    veo_style_setting = settings.get("veo_style", "auto")
+                    effective_style = self.veo_video.resolve_scene_style(veo_style_setting, i + 1)
+
+                    veo_prompt = self.veo_video.build_prompt(
+                        veo_style=effective_style,
+                        scene_number=i + 1,
                         scene_text=scene_text_for_vid,
                         visual_cues=visual_cues_for_vid,
                         book_title=article_title if is_book_review else "",
                         book_author=book_author if is_book_review else "",
-                        scene_number=i + 1,
                         total_scenes=len(scenes_with_timing),
                         content_type=content_type_hint or "daily_update",
                     )
-                    veo_output = project_video_dir / f"scene_{i+1}_veo.mp4"
-                    logger.info(f"[Veo] Scene {i+1}: Generating AI video ({len(veo_prompt)} chars)")
+                    veo_output = project_video_dir / f"scene_{i+1}_veo_{effective_style}.mp4"
+                    logger.info(f"[Veo] Scene {i+1}: style={effective_style} ({len(veo_prompt)} chars)")
                     veo_path = loop.run_until_complete(
                         self.veo_video.generate_video(
                             prompt=veo_prompt,
@@ -626,10 +998,21 @@ class EnhancedVideoCompositionService:
                     if veo_path:
                         bg_clip = self._create_video_background(veo_path, scene_duration, (w, h))
                         if bg_clip:
-                            logger.info(f"[Veo] Scene {i+1}: Using AI-generated video")
+                            logger.info(f"[Veo] Scene {i+1}: Using AI-generated video ({effective_style})")
                 except Exception as veo_err:
                     logger.warning(f"[Veo] Scene {i+1} generation failed (falling back): {veo_err}")
+                finally:
+                    # Rate-limit: space out sequential Veo calls to avoid 429 quota errors
+                    if i < len(scenes_with_timing) - 1:
+                        time.sleep(5)
             
+            # PRIORITY 0.75: Gemini AI image fallback (Veo failed or not selected, AI images requested)
+            # This is the "Nano Banana" fallback — cinematic AI image with Ken Burns beats stock video.
+            if bg_clip is None and i in scene_images and image_source_render in ("ai_generated", "auto"):
+                image_path = scene_images[i]
+                logger.info(f"[AI Image] Scene {i+1}: Gemini AI image fallback (Nano Banana) → {image_path.name}")
+                bg_clip = self._create_ken_burns_clip(image_path, scene_duration, (w, h), direction=kb_direction, scene_index=i)
+
             # PRIORITY 1: Try to get a stock VIDEO (unless images_only mode)
             if bg_clip is None and self.video_search and keywords and background_mode != "images_only":
                 for keyword in keywords:
@@ -652,7 +1035,7 @@ class EnhancedVideoCompositionService:
                 image_index = i % len(prefetched_images)
                 image_path = prefetched_images[image_index]
                 logger.info(f"[Image] Using pre-fetched image {image_index+1}/{len(prefetched_images)}: {image_path.name}")
-                bg_clip = self._create_ken_burns_clip(image_path, scene_duration, (w, h), direction=kb_direction)
+                bg_clip = self._create_ken_burns_clip(image_path, scene_duration, (w, h), direction=kb_direction, scene_index=i)
             
             # PRIORITY 3: Real-time search fallback
             if bg_clip is None and keywords:
@@ -670,7 +1053,7 @@ class EnhancedVideoCompositionService:
                             )
                         )
                         if image_path:
-                            bg_clip = self._create_ken_burns_clip(image_path, scene_duration, (w, h), direction=kb_direction)
+                            bg_clip = self._create_ken_burns_clip(image_path, scene_duration, (w, h), direction=kb_direction, scene_index=i)
                             logger.info(f"[Image] Using real-time search for scene {i+1}")
                             break
                     except Exception as e:
@@ -686,41 +1069,73 @@ class EnhancedVideoCompositionService:
             scene_clip = scene_clip.with_start(scene_start).with_duration(scene_duration)
             
             # Add fade/crossfade transitions (driven by transition_hint from script)
-            transition_hint = scene.get("transition_hint", "fade") if is_book_review else "fade"
+            # Both book review and viral news honour per-scene transition hints.
+            use_hints = is_book_review or is_viral_news
+            transition_hint = scene.get("transition_hint", "fade") if use_hints else "fade"
             effects = []
             if i > 0:
                 if transition_hint == "cut":
                     # Hard cut: no transition effect
                     pass
                 elif transition_hint == "match_cut":
-                    # Quick dissolve for match-cuts (abstract → human reaction)
+                    # Quick dissolve for match-cuts
                     effects.append(vfx.FadeIn(0.3))
                 else:
-                    # Default fade
-                    fade_duration = 0.8 if is_book_review else 0.5
+                    # Default fade — shorter for news (punchy), longer for book (cinematic)
+                    fade_duration = 0.8 if is_book_review else 0.4
                     effects.append(vfx.FadeIn(fade_duration))
             if i < len(scenes_with_timing) - 1:
                 # Fade out uses same hint as the NEXT scene's transition_hint
-                next_hint = scenes_with_timing[i + 1].get("transition_hint", "fade") if is_book_review else "fade"
+                next_hint = scenes_with_timing[i + 1].get("transition_hint", "fade") if use_hints else "fade"
                 if next_hint == "cut":
                     pass
                 elif next_hint == "match_cut":
                     effects.append(vfx.FadeOut(0.3))
                 else:
-                    fade_duration = 0.8 if is_book_review else 0.5
+                    fade_duration = 0.8 if is_book_review else 0.4
                     effects.append(vfx.FadeOut(fade_duration))
             if effects:
                 scene_clip = scene_clip.with_effects(effects)
             
             scene_clips.append(scene_clip)
-        
-        # Create subtitle clips — sentence-level for book reviews (YouTube CC style), word-level for others
-        if is_book_review:
-            logger.info("Creating sentence-level subtitles (Book V3 — YouTube CC style)...")
-            # Extract timestamps for kinetic typography color flip (visual pattern interrupt)
+
+            # Collect story beat timing for Daily Digest per-scene ticker overlay
+            if is_daily_digest:
+                dd_story_beats.append({
+                    "company":       scene.get("company", "").strip(),
+                    "story_index":   scene.get("story_index", 0),
+                    "text":          scene.get("text", ""),
+                    "start":         scene_start,
+                    "duration":      scene_duration,
+                    # True for hook / connecting thread / insight / CTA — no ticker badge
+                    "is_structural": (scene.get("story_index", 0) == 0),
+                })
+
+            # ── Kinetic callout (book review only) ──────────────────────────────
+            # Bold 2-3 word punch text that animates in at scene start (0→1.5s).
+            # Gold accent for the 3 punchy beats (scenes 1, 4, 6); white for others.
+            if is_book_review:
+                callout_text = scene.get("callout", "").strip().upper()
+                if callout_text:
+                    accent = i in (0, 3, 5)  # scenes 1, 4, 6 (0-indexed)
+                    callout_clip = self._create_kinetic_callout(
+                        callout_text=callout_text,
+                        video_size=(w, h),
+                        scene_start=scene_start,
+                        accent=accent,
+                    )
+                    if callout_clip:
+                        callout_clips.append(callout_clip)
+                        logger.info(f"[Callout] Scene {i+1}: '{callout_text}' (accent={accent})")
+
+        # Create subtitle clips — sentence-level CC style for book review + viral news,
+        # word-level for all other content types.
+        if is_book_review or is_viral_news or is_daily_digest:
+            logger.info("Creating sentence-level subtitles (YouTube CC style + kinetic color flip)...")
             visual_interrupt_times = [ev["time"] for ev in interrupt_plan]
             all_subtitle_clips = self._create_sentence_subtitles(
-                all_words, all_segments, (w, h), interrupt_times=visual_interrupt_times
+                all_words, all_segments, (w, h), interrupt_times=visual_interrupt_times,
+                is_daily_digest=is_daily_digest
             )
         else:
             logger.info("Creating word-level subtitles...")
@@ -740,8 +1155,62 @@ class EnhancedVideoCompositionService:
             )
             logger.info(f"Added book title overlay: '{article_title}'")
         
-        # Composite all scenes + subtitles + overlay
-        all_clips = scene_clips + all_subtitle_clips + title_overlay_clips
+        # Source attribution overlay for viral news (top bar, first 8 seconds)
+        source_overlay_clips = []
+        if is_viral_news:
+            news_source = ''
+            news_category = ''
+            if script.article:
+                news_source = script.article.author or ''
+                if hasattr(script.article, 'viral_news_source') and script.article.viral_news_source:
+                    news_source = news_source or (script.article.viral_news_source.source_name or '')
+                    news_category = script.article.viral_news_source.news_category or ''
+            if news_source:
+                source_overlay_clips = self._create_news_source_overlay(
+                    source_name=news_source,
+                    category=news_category,
+                    duration=min(8.0, duration),
+                    video_size=(w, h),
+                )
+                logger.info(f"[SourceOverlay] Via '{news_source}' ({news_category})")
+
+        # AI INSIDER EXCLUSIVE header overlay for Daily Digest (Y: 10%–20% safe zone)
+        # Persistent static title bar — bold condensed font, 2px drop shadow
+        digest_header_clips = []
+        if is_daily_digest:
+            digest_header_clips = self._create_digest_header_overlay(
+                duration=duration,
+                video_size=(w, h),
+                article_title=getattr(script, "catchy_title", None) or article_title or "",
+            )
+            logger.info("[DigestHeader] Added 'AI INSIDER EXCLUSIVE' header overlay")
+
+        # Per-scene story title ticker for Daily Digest (Y: ~22% — below header bar)
+        # Shows which company/story is currently being covered:
+        # e.g. "STORY 1 · OPENAI"  →  "STORY 2 · ANTHROPIC"  →  "STORY 3 · GOOGLE"
+        story_ticker_clips = []
+        if is_daily_digest and dd_story_beats:
+            story_ticker_clips = self._create_story_ticker_clips(
+                story_beats=dd_story_beats,
+                video_size=(w, h),
+            )
+            logger.info(f"[StoryTicker] Built {len(story_ticker_clips)} ticker clips")
+
+        # PiP book cover overlay (brand anchor — bottom-right corner, ≥30% duration)
+        pip_clips = []
+        if is_book_review and prefetched_images:
+            pip_clip = self._create_pip_book_cover(
+                book_cover_path=prefetched_images[0],
+                video_size=(w, h),
+                total_duration=duration,
+                start_time=0.0
+            )
+            if pip_clip:
+                pip_clips.append(pip_clip)
+
+        # Layer order (bottom → top): scenes → pip → callouts → subtitles → title_overlay → source_overlay → digest_header → story_ticker
+        # story_ticker at ~22% Y (below header), subtitles at 50% Y — no spatial overlap
+        all_clips = scene_clips + pip_clips + callout_clips + all_subtitle_clips + title_overlay_clips + source_overlay_clips + digest_header_clips + story_ticker_clips
         main_video = CompositeVideoClip(all_clips, size=(w, h))
         main_video = main_video.with_duration(duration)
         
@@ -755,8 +1224,9 @@ class EnhancedVideoCompositionService:
         if music_path:
             music_volume = self.music_service.get_recommended_volume(content_type)
             music_clip = AudioFileClip(str(music_path))
-            # Loop music to cover video + end screen duration
-            total_duration = duration + 4  # +4s for end screen
+            # Loop music to cover video + end screen duration (no end screen for daily_update)
+            end_screen_extra = 0 if content_type == "daily_update" else 4
+            total_duration = duration + end_screen_extra
             if music_clip.duration < total_duration:
                 # Loop the music using MoviePy 2.x API
                 from moviepy.audio.fx.AudioLoop import AudioLoop
@@ -771,16 +1241,36 @@ class EnhancedVideoCompositionService:
             final_audio = audio_clip
             logger.warning("No background music available, using narration only")
         
-        # ── SFX Layer: Pattern Interrupt Audio Resets ──
-        # Inject subtle whoosh/thud sound effects at planned interrupt timestamps
-        # to refresh viewer attention every 7-10 seconds (only for book reviews)
-        if is_book_review and interrupt_plan:
-            sfx_clips = [final_audio]
-            sfx_added = 0
-            for interrupt in interrupt_plan:
-                if interrupt.get("type") == "audio":
-                    sfx_time = interrupt["time"]
-                    sfx_type = interrupt.get("sfx_type", "whoosh")
+        # ── SFX Layer: Pacing-Break-Aware Pattern Interrupt Audio ──
+        # Use natural speech pause timestamps (Whisper segment gaps) instead of
+        # fixed 7-10s intervals — SFX hits land exactly where the speaker breathes.
+        # Falls back to interrupt_plan if no pacing breaks detected.
+        # Enabled for both book review and viral news.
+        if is_book_review or is_viral_news:
+            pacing_break_times = self._detect_pacing_breaks(all_segments)
+
+            if pacing_break_times:
+                sfx_events = [
+                    {"time": t, "sfx_type": "whoosh" if idx % 2 == 0 else "thud"}
+                    for idx, t in enumerate(pacing_break_times)
+                ]
+                logger.info(f"[SFX] Using {len(sfx_events)} pacing-break timestamps (speech-sync mode)")
+            elif interrupt_plan:
+                sfx_events = [
+                    {"time": ev["time"], "sfx_type": ev.get("sfx_type", "whoosh")}
+                    for ev in interrupt_plan
+                    if ev.get("type") == "audio"
+                ]
+                logger.info(f"[SFX] No pacing breaks detected, falling back to {len(sfx_events)} fixed-interval events")
+            else:
+                sfx_events = []
+
+            if sfx_events:
+                sfx_clips = [final_audio]
+                sfx_added = 0
+                for event in sfx_events:
+                    sfx_time = event["time"]
+                    sfx_type = event.get("sfx_type", "whoosh")
                     if sfx_time < duration - 0.5:
                         try:
                             sfx_clip = self.pattern_interrupt.get_sfx_clip(sfx_type, duration=0.3)
@@ -790,28 +1280,33 @@ class EnhancedVideoCompositionService:
                                 sfx_added += 1
                         except Exception as sfx_e:
                             logger.warning(f"[SFX] Failed to add {sfx_type} at {sfx_time:.1f}s: {sfx_e}")
-            if sfx_added > 0:
-                final_audio = CompositeAudioClip(sfx_clips)
-                logger.info(f"[PatternInterrupt] Added {sfx_added} SFX clips to audio mix")
+                if sfx_added > 0:
+                    final_audio = CompositeAudioClip(sfx_clips)
+                    logger.info(f"[PatternInterrupt] Added {sfx_added} pacing-sync SFX clips to audio mix")
         
         # Set audio on main video
         main_video = main_video.with_audio(final_audio.subclipped(0, duration))
         
-        # Create end screen clip (4 seconds)
-        logger.info("Adding end screen...")
-        end_screen_path = self.end_screen_service.generate_end_screen(content_type)
-        end_screen_clip = ImageClip(str(end_screen_path))
-        end_screen_clip = end_screen_clip.with_duration(4)
-        end_screen_clip = end_screen_clip.resized((w, h))
-        end_screen_clip = end_screen_clip.with_effects([vfx.FadeIn(0.5)])
-        
-        # Add music to end screen if available
-        if music_path:
-            end_screen_audio = final_audio.subclipped(duration, duration + 4)
-            end_screen_clip = end_screen_clip.with_audio(end_screen_audio)
-        
-        # Concatenate main video + end screen
-        final_video = concatenate_videoclips([main_video, end_screen_clip], method="compose")
+        # Create end screen clip (4 seconds) — skip for daily_update (CTA scene has brand card)
+        is_daily_digest_render = content_type == "daily_update"
+        if is_daily_digest_render:
+            logger.info("[DD] Skipping end screen — CTA scene already has AIInsider.png brand card")
+            final_video = main_video
+        else:
+            logger.info("Adding end screen...")
+            end_screen_path = self.end_screen_service.generate_end_screen(content_type)
+            end_screen_clip = ImageClip(str(end_screen_path))
+            end_screen_clip = end_screen_clip.with_duration(4)
+            end_screen_clip = end_screen_clip.resized((w, h))
+            end_screen_clip = end_screen_clip.with_effects([vfx.FadeIn(0.5)])
+            
+            # Add music to end screen if available
+            if music_path:
+                end_screen_audio = final_audio.subclipped(duration, duration + 4)
+                end_screen_clip = end_screen_clip.with_audio(end_screen_audio)
+            
+            # Concatenate main video + end screen
+            final_video = concatenate_videoclips([main_video, end_screen_clip], method="compose")
         
         # Write file
         logger.info(f"Writing video to {output_path}")
@@ -869,7 +1364,8 @@ class EnhancedVideoCompositionService:
         duration: float,
         size: Tuple[int, int],
         zoom: float = None,
-        direction: str = "push_in"
+        direction: str = "push_in",
+        scene_index: int = 0
     ):
         """Create image clip with Ken Burns effect (slow zoom).
         
@@ -889,12 +1385,17 @@ class EnhancedVideoCompositionService:
         import numpy as np
         
         w, h = size  # e.g., 1080 x 1920
-        target_zoom = min(zoom or 1.1, 1.15)  # Cap zoom to prevent text cutoff
+        target_zoom = min(zoom or 1.1, 1.3)  # Increased cap for more aggressive Nano Banana zoom
         target_aspect = w / h  # 0.5625 for 9:16
-        
+
+        # Subtle alternating rotation per scene for dynamic visual energy (±0.3°)
+        rotation_deg = 0.3 if scene_index % 2 == 0 else -0.3
+
         # Load image and detect aspect ratio
         try:
             pil_img = PILImage.open(str(image_path)).convert("RGB")
+            # Apply subtle pre-rotation for dynamic feel
+            pil_img = pil_img.rotate(rotation_deg, resample=PILImage.BILINEAR, expand=False)
         except Exception as e:
             logger.warning(f"[KenBurns] Failed to open image {image_path}: {e}")
             # Return a gradient fallback
@@ -908,8 +1409,8 @@ class EnhancedVideoCompositionService:
         
         if aspect_diff < 0.15:
             # ===== FILL MODE: Image is close to 9:16 =====
-            # Resize by height (slight horizontal crop is acceptable)
-            img_clip = ImageClip(str(image_path))
+            # Use rotated PIL array (already rotated above) instead of raw path
+            img_clip = ImageClip(np.array(pil_img))
             img_clip = img_clip.resized(height=int(h * 1.15))  # 15% headroom for zoom
             img_clip = img_clip.with_position("center")
         else:
@@ -956,13 +1457,36 @@ class EnhancedVideoCompositionService:
             zoom_end = target_zoom
         
         def zoom_effect(t):
-            return zoom_start + (zoom_end - zoom_start) * (t / max(duration, 0.1))
+            # Smoothstep ease-in-out: feels dynamic, not robotic
+            progress = max(0.0, min(1.0, t / max(duration, 0.1)))
+            t_eased = progress * progress * (3.0 - 2.0 * progress)
+            return zoom_start + (zoom_end - zoom_start) * t_eased
         
         img_clip = img_clip.resized(lambda t: zoom_effect(t))
         img_clip = img_clip.with_position("center")
         img_clip = img_clip.with_duration(duration)
         
         return img_clip
+
+    def _detect_pacing_breaks(self, segments: list) -> list:
+        """Detect natural speech pauses > 0.4s between Whisper segments.
+
+        Returns timestamps (midpoint of each pause) suitable for SFX injection.
+        Falls back to empty list if segments are unavailable or too few.
+        """
+        THRESHOLD = 0.4  # seconds — tunable
+        if not segments or len(segments) < 2:
+            return []
+        sorted_segs = sorted(segments, key=lambda s: s.get("start", 0))
+        breaks = []
+        for idx in range(len(sorted_segs) - 1):
+            current_end = sorted_segs[idx].get("end", 0)
+            next_start = sorted_segs[idx + 1].get("start", 0)
+            gap = next_start - current_end
+            if gap > THRESHOLD:
+                breaks.append(round(current_end + gap / 2.0, 2))
+        logger.info(f"[PacingBreak] Detected {len(breaks)} breaks from {len(sorted_segs)} segments (threshold={THRESHOLD}s)")
+        return breaks
 
     def _create_video_background(self, video_path: Path, duration: float, size: Tuple[int, int]) -> Optional[VideoFileClip]:
         """
@@ -1119,7 +1643,8 @@ class EnhancedVideoCompositionService:
         words: List[Dict], 
         segments: List[Dict], 
         video_size: Tuple[int, int],
-        interrupt_times: List[float] = None
+        interrupt_times: List[float] = None,
+        is_daily_digest: bool = False
     ) -> List[TextClip]:
         """Create sentence-level subtitle clips (YouTube CC style).
         
@@ -1136,9 +1661,13 @@ class EnhancedVideoCompositionService:
         w, h = video_size
         clips = []
         
-        # Position at 75% from top — slightly higher than phrase subtitles
-        # to accommodate multi-line text while staying in safe zone
-        y_position = int(h * 0.75)
+        # Safe Zone Y positions:
+        # - Daily Digest: Y=50% → centers captions in content zone, header overlay sits at Y=12%
+        # - Book Review / Viral News: Y=75% → keeps captions in lower third, avoids focal points
+        if is_daily_digest:
+            y_position = int(h * 0.50)  # Center content zone (header at 12% leaves room above)
+        else:
+            y_position = int(h * 0.75)  # Lower third (book/news focal points are upper half)
         
         # Max characters per line before wrapping
         MAX_CHARS_PER_LINE = 35
@@ -1323,10 +1852,455 @@ class EnhancedVideoCompositionService:
         
         return clips
 
+    def _create_digest_header_overlay(
+        self,
+        duration: float,
+        video_size: Tuple[int, int],
+        article_title: str = "",
+    ) -> List:
+        """Create a persistent 2-row header bar for Daily Digest.
+
+        Layout (Y positions within Shorts safe zone):
+          Y  0%–10%: YouTube UI (channel name, follow button) — do not render
+          Y 10%–24%: Header zone ← this method renders here
+            Row 1 (Y=12%): ⚡ AI INSIDER · EXCLUSIVE BRIEFING — cyan, 28px
+            Row 2 (Y=17%): Article catchy title — white bold, 34px, PROMINENT
+          Y 24%–80%: Content zone (captions at 50%)
+          Y 80%+:    YouTube subscribe button no-fly zone
+
+        Args:
+            duration:      Total video duration in seconds
+            video_size:    (width, height) of the video frame
+            article_title: The script's catchy_title to display as Row 2
+        """
+        from PIL import Image as PILImage
+        import numpy as np
+
+        w, h = video_size
+        clips = []
+
+        y_bar_top   = int(h * 0.10)   # bar starts at 10%
+        bar_height  = 120              # taller bar for 2 rows
+        y_brand_row = int(h * 0.12)   # Row 1: brand line at 12%
+        y_title_row = int(h * 0.17)   # Row 2: article title at 17%
+
+        # ── Semi-transparent obsidian background bar ──────────────────────
+        try:
+            bar_img   = PILImage.new('RGBA', (w, bar_height), (6, 8, 16, 230))  # 90% opacity
+            bar_array = np.array(bar_img)
+            bar_clip  = (
+                ImageClip(bar_array)
+                .with_position(('center', y_bar_top))
+                .with_start(0)
+                .with_duration(duration)
+            )
+            clips.append(bar_clip)
+
+            # Cyan accent glow line at the bottom edge of the bar
+            glow_img   = PILImage.new('RGBA', (w, 4), (0, 200, 255, 210))
+            glow_array = np.array(glow_img)
+            glow_clip  = (
+                ImageClip(glow_array)
+                .with_position(('center', y_bar_top + bar_height - 2))
+                .with_start(0)
+                .with_duration(duration)
+            )
+            clips.append(glow_clip)
+        except Exception as e:
+            logger.warning(f"[DigestHeader] Could not create background bar: {e}")
+
+        # ── Row 1: Brand line — ⚡ AI INSIDER · EXCLUSIVE BRIEFING ────────
+        try:
+            brand_clip = (
+                TextClip(
+                    text="⚡ AI INSIDER  ·  EXCLUSIVE BRIEFING",
+                    font_size=28,
+                    color='#00C8FF',          # Cyan
+                    font='/System/Library/Fonts/Supplemental/Arial Bold.ttf',
+                    stroke_color='black',
+                    stroke_width=1,
+                    text_align='center',
+                )
+                .with_position(('center', y_brand_row))
+                .with_start(0)
+                .with_duration(duration)
+            )
+            clips.append(brand_clip)
+        except Exception as e:
+            logger.warning(f"[DigestHeader] Brand line failed: {e}")
+
+        # ── Row 2: Article title — WHITE BOLD, prominent ──────────────────
+        if article_title:
+            # Truncate to fit 9:16 frame width (≈42 chars at 34px)
+            display_title = article_title.strip()
+            if len(display_title) > 42:
+                display_title = display_title[:40] + "…"
+            display_title = display_title.upper()
+            try:
+                title_clip = (
+                    TextClip(
+                        text=display_title,
+                        font_size=34,
+                        color='#FFFFFF',          # White — stands out on dark bar
+                        font='/System/Library/Fonts/Supplemental/Arial Bold.ttf',
+                        stroke_color='#000000',
+                        stroke_width=2,
+                        text_align='center',
+                    )
+                    .with_position(('center', y_title_row))
+                    .with_start(0)
+                    .with_duration(duration)
+                )
+                clips.append(title_clip)
+                logger.info(f"[DigestHeader] Article title: '{display_title}'")
+            except Exception as e:
+                logger.warning(f"[DigestHeader] Title row failed: {e}")
+
+        return clips
+
+
+    def _create_story_ticker_clips(
+        self,
+        story_beats: list,
+        video_size: Tuple[int, int],
+    ) -> List:
+        """Render a per-scene story title badge for Daily Digest videos.
+
+        Layout (Y positions within safe zone):
+          Y 10%-18%: AI INSIDER header bar      (persistent)
+          Y 20%-27%: Story ticker badge ← here  (changes per scene)
+          Y 30%-70%: Content zone               (captions at 50%)
+          Y 80%+:    YouTube UI no-fly zone
+
+        Story beats (story_index > 0): "STORY N  ·  COMPANY NAME" in cyan pill
+        Hook / thread / impact / CTA scenes (story_index == 0): no badge shown
+
+        Args:
+            story_beats: List of dicts with company, story_index, start, duration
+            video_size:  (width, height) of the video frame
+        """
+        from PIL import Image as PILImage
+        import numpy as np
+
+        w, h = video_size
+        clips = []
+
+        y_ticker = int(h * 0.22)   # 22% from top
+        bar_height = 44
+        y_bar = y_ticker - 10
+
+        story_num = 0  # Track displayed story count
+
+        for beat in story_beats:
+            company      = beat.get("company", "").strip().upper()
+            story_index  = beat.get("story_index", 0)
+            beat_start   = beat.get("start", 0.0)
+            beat_dur     = beat.get("duration", 5.0)
+            scene_text   = beat.get("text", "")
+            is_structural = beat.get("is_structural", story_index == 0)
+
+            # Skip hook / connecting thread / insight / CTA scenes — no badge
+            if is_structural:
+                continue
+
+            # Fallback: extract company from scene text if LLM left field empty
+            if not company and scene_text:
+                try:
+                    from app.services.daily_digest_service import _extract_company
+                    company = _extract_company(scene_text).upper()
+                except Exception:
+                    pass
+
+            # If we still have no company name, skip silently (no "STORY N" fallback)
+            if not company:
+                continue
+
+            story_num += 1
+            # Label = company name only — clean, no redundant "STORY N ·" counter
+            label = company
+            if len(label) > 36:
+                label = label[:34] + "…"
+
+            # Dark navy pill background
+            try:
+                pill_img   = PILImage.new('RGBA', (w, bar_height), (6, 18, 32, 215))
+                pill_array = np.array(pill_img)
+                pill_clip  = (
+                    ImageClip(pill_array)
+                    .with_position(('center', y_bar))
+                    .with_start(beat_start)
+                    .with_duration(beat_dur)
+                    .with_effects([vfx.FadeIn(0.3), vfx.FadeOut(0.2)])
+                )
+                clips.append(pill_clip)
+            except Exception as e:
+                logger.warning(f"[StoryTicker] Pill bg failed (story {story_num}): {e}")
+
+            # Cyan label text — company name only
+            try:
+                label_clip = (
+                    TextClip(
+                        text=label,
+                        font_size=28,
+                        color='#00C8FF',
+                        font='/System/Library/Fonts/Supplemental/Arial Bold.ttf',
+                        stroke_color='black',
+                        stroke_width=1,
+                        text_align='center',
+                    )
+                    .with_position(('center', y_ticker))
+                    .with_start(beat_start)
+                    .with_duration(beat_dur)
+                    .with_effects([vfx.FadeIn(0.3), vfx.FadeOut(0.2)])
+                )
+                clips.append(label_clip)
+                logger.debug(f"[StoryTicker] t={beat_start:.1f}s: '{label}'")
+            except Exception as e:
+                logger.warning(f"[StoryTicker] Label failed (story {story_num}): {e}")
+
+        logger.info(f"[StoryTicker] Rendered {story_num} story badges")
+        return clips
+
+    def _create_news_source_overlay(
+
+        self,
+        source_name: str,
+        category: str,
+        duration: float,
+        video_size: Tuple[int, int],
+    ) -> List:
+        """Create a news source attribution overlay for viral news videos.
+
+        Shows "🔥 CATEGORY  •  Via SourceName" in a semi-transparent top bar
+        for the first `duration` seconds (default 8s), then fades out.
+        Styled in warm gold to match the kinetic subtitle color palette.
+
+        Args:
+            source_name: News outlet name (e.g., "Reuters", "Bloomberg")
+            category:    News category (e.g., "technology", "business")
+            duration:    How long to display (seconds) — caller caps at min(8, total)
+            video_size:  (width, height) of the video frame
+        """
+        from PIL import Image as PILImage
+        import numpy as np
+
+        w, h = video_size
+        clips = []
+
+        # Position: 12% from top — below the YouTube Shorts channel bar safe zone
+        y_bar = int(h * 0.12)
+
+        # Semi-transparent background bar
+        try:
+            bar_height = 64
+            bar_img = PILImage.new('RGBA', (w, bar_height), (0, 0, 0, 180))
+            bar_array = np.array(bar_img)
+            bar_clip = (
+                ImageClip(bar_array)
+                .with_position(('center', y_bar - 12))
+                .with_start(0)
+                .with_duration(duration)
+                .with_effects([vfx.FadeIn(0.5), vfx.FadeOut(0.8)])
+            )
+            clips.append(bar_clip)
+        except Exception as e:
+            logger.warning(f"[SourceOverlay] Background bar failed: {e}")
+
+        # Source attribution text: "🔥 TECHNOLOGY  •  Via Reuters"
+        cat_label = f"🔥 {category.upper()}" if category else "🔥 BREAKING"
+        label_text = f"{cat_label}  •  Via {source_name}"
+
+        try:
+            txt_clip = (
+                TextClip(
+                    text=label_text,
+                    font_size=30,
+                    color='#FFD700',    # warm gold — matches kinetic subtitle accent
+                    font='/System/Library/Fonts/Supplemental/Arial Bold.ttf',
+                    stroke_color='black',
+                    stroke_width=1,
+                    text_align='center',
+                )
+                .with_position(('center', y_bar))
+                .with_start(0)
+                .with_duration(duration)
+                .with_effects([vfx.FadeIn(0.5), vfx.FadeOut(0.8)])
+            )
+            clips.append(txt_clip)
+        except Exception as e:
+            logger.warning(f"[SourceOverlay] Text clip failed: {e}")
+
+        return clips
+
+    def _create_pip_book_cover(
+        self,
+        book_cover_path: Path,
+        video_size: Tuple[int, int],
+        total_duration: float,
+        start_time: float = 0.0
+    ) -> Optional[ImageClip]:
+        """Create a Picture-in-Picture book cover overlay for brand recognition.
+
+        Positions the cover in the bottom-right corner at 15% frame width.
+        Enforces ≥30% visibility duration per the "60 Second Books" brand rule.
+        Includes rounded corners and a subtle drop shadow.
+
+        Returns ImageClip ready to composite, or None on failure.
+        """
+        from PIL import Image as PILImage, ImageDraw, ImageFilter
+        import numpy as np
+
+        w, h = video_size
+
+        try:
+            cover_img = PILImage.open(str(book_cover_path)).convert("RGBA")
+        except Exception as e:
+            logger.warning(f"[PiP] Cannot open book cover {book_cover_path}: {e}")
+            return None
+
+        # Scale to 15% of frame width, preserving aspect ratio
+        pip_width = int(w * 0.15)
+        cover_w, cover_h = cover_img.size
+        pip_height = int(pip_width * cover_h / cover_w)
+
+        cover_resized = cover_img.resize((pip_width, pip_height), PILImage.LANCZOS)
+
+        # Rounded-corner mask
+        corner_radius = max(4, int(pip_width * 0.08))
+        mask = PILImage.new("L", (pip_width, pip_height), 0)
+        draw = ImageDraw.Draw(mask)
+        draw.rounded_rectangle([(0, 0), (pip_width - 1, pip_height - 1)], radius=corner_radius, fill=255)
+        cover_resized.putalpha(mask)
+
+        # Drop shadow layer
+        shadow_offset = 4
+        canvas_w = pip_width + shadow_offset * 2
+        canvas_h = pip_height + shadow_offset * 2
+        shadow_img = PILImage.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
+        shadow_layer = PILImage.new("RGBA", (pip_width, pip_height), (0, 0, 0, 180))
+        shadow_layer.putalpha(mask)
+        shadow_img.paste(shadow_layer, (shadow_offset, shadow_offset), shadow_layer)
+        shadow_img = shadow_img.filter(ImageFilter.GaussianBlur(radius=4))
+
+        # Composite shadow + cover
+        canvas = PILImage.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
+        canvas.paste(shadow_img, (0, 0), shadow_img)
+        canvas.paste(cover_resized, (shadow_offset, shadow_offset), cover_resized)
+
+        pip_array = np.array(canvas)
+
+        # Enforce ≥30% visibility (minimum 5s floor)
+        min_duration = max(total_duration * 0.30, 5.0)
+        overlay_duration = min(total_duration - start_time, min_duration)
+        overlay_duration = max(overlay_duration, 0.5)
+
+        # Bottom-right corner, 8% margin — stay above YouTube Shorts UI bar (bottom 12%)
+        margin_x = int(w * 0.08)
+        margin_y = int(h * 0.08)
+        pip_x = w - canvas_w - margin_x
+        safe_bottom = int(h * 0.88)
+        pip_y = min(h - canvas_h - margin_y, safe_bottom - canvas_h)
+
+        try:
+            pip_clip = (
+                ImageClip(pip_array)
+                .with_position((pip_x, pip_y))
+                .with_start(start_time)
+                .with_duration(overlay_duration)
+            )
+            logger.info(
+                f"[PiP] Book cover overlay: {pip_width}x{pip_height}px at ({pip_x},{pip_y}), "
+                f"duration={overlay_duration:.1f}s ({overlay_duration/total_duration*100:.0f}% of video)"
+            )
+            return pip_clip
+        except Exception as e:
+            logger.warning(f"[PiP] Failed to create PiP clip: {e}")
+            return None
+
+    def _create_kinetic_callout(
+        self,
+        callout_text: str,
+        video_size: Tuple[int, int],
+        scene_start: float,
+        accent: bool = False,
+    ) -> Optional[ImageClip]:
+        """Render a 2-3 word bold callout with a scale-punch animation.
+
+        The callout appears at scene_start + 0.15s, scales from 0.65→1.0 over 0.25s
+        (quadratic ease-out), holds, then fades out over 0.3s. Total duration: 1.5s.
+
+        Args:
+            callout_text: ALL-CAPS text (2-3 words max)
+            video_size:   (width, height) of the output video
+            scene_start:  Absolute start time of the scene in the final video
+            accent:       True = gold (#FFD700), False = white — use gold for punch beats
+        """
+        if not callout_text or not callout_text.strip():
+            return None
+        callout_text = callout_text.strip()
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+            import numpy as np
+
+            w, h = video_size
+            font_path = "/System/Library/Fonts/Supplemental/Arial Bold.ttf"
+            font_size = 68
+            canvas_h = 160  # Tall enough for two-line callout safety margin
+
+            try:
+                font = ImageFont.truetype(font_path, size=font_size)
+            except OSError:
+                font = ImageFont.load_default()
+
+            color = "#FFD700" if accent else "#FFFFFF"  # gold vs white
+            stroke_color = "#000000"
+            stroke_w = 4
+
+            # Render text on transparent RGBA canvas, centered
+            canvas = Image.new("RGBA", (w, canvas_h), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(canvas)
+            draw.text(
+                (w // 2, canvas_h // 2),
+                callout_text,
+                font=font,
+                fill=color,
+                anchor="mm",
+                stroke_width=stroke_w,
+                stroke_fill=stroke_color,
+            )
+
+            base_clip = ImageClip(np.array(canvas), is_mask=False)
+
+            # Scale-punch: quadratic ease-out from 0.65 → 1.0 over 0.25s
+            PUNCH_DUR = 0.25
+            FADE_DUR = 0.30
+            TOTAL_DUR = 1.50
+
+            def scale_func(t: float) -> float:
+                if t < PUNCH_DUR:
+                    progress = t / PUNCH_DUR
+                    ease = 1.0 - (1.0 - progress) ** 2   # quadratic ease-out
+                    return 0.65 + 0.35 * ease
+                return 1.0
+
+            callout_clip = (
+                base_clip
+                .resized(scale_func)
+                .with_position(("center", int(h * 0.42)))
+                .with_start(scene_start + 0.15)
+                .with_duration(TOTAL_DUR)
+                .with_effects([vfx.FadeOut(FADE_DUR)])
+            )
+            return callout_clip
+
+        except Exception as e:
+            logger.warning(f"[Callout] Failed to create kinetic callout for '{callout_text}': {e}")
+            return None
+
     def _compose_simple_video(
-        self, 
-        script: Script, 
-        audio_path: Path, 
+        self,
+        script: Script,
+        audio_path: Path,
         output_path: Path,
         settings: Dict[str, Any]
     ):

@@ -321,10 +321,55 @@ Extract key insights from any YouTube video and create viral Shorts with two cre
   - React UI with category tabs, virality badges, and inline script preview
   - Feeds into existing Article → Script → Audio → Video pipeline
   - Foundation pattern for all future content journeys (plug-in architecture)
+- **Daily Digest — AI Insider (Sprint 1) ✅ COMPLETE (2026-03-06)**
+  - ElevenLabs Thomas/Antoni voice personas with analyst voice settings (stability 45%, similarity boost 75%, style 15%)
+  - "Urgent Insider" prompt: investigative journalist persona, per-story "Why It Matters" rule, provocative closing question + Subscribe CTA
+  - Mandatory dark cinematic image prompt prefix (midnight blue/obsidian palette) with topic-aware routing for OpenAI, Google, Anthropic, Robotics, Policy
+  - Caption Y position shifted to 50% safe zone (center content area, away from YouTube Shorts UI)
+  - "⚡ AI INSIDER · EXCLUSIVE BRIEFING" header overlay at Y=12% (obsidian bar + cyan accent glow line)
 
 **Estimated**: 3-4 weeks
 
 ---
+
+### Daily Digest — Sprint 2: Pacing Engine 🟣 PLANNED
+**Priority**: 🟡 P1 (High)  
+**Target**: Q2 2026  
+
+**Overview**: Implement the 1.8-second rule for visual state changes to maximize YouTube Shorts retention. Every 1.8 seconds the viewer sees a new visual stimulus — preventing scroll-drop.
+
+**Features**:
+- [ ] Reduce `PatternInterruptService` trigger interval from 7–10s → 1.8s for `daily_update` content type
+- [ ] Implement `_create_punch_in_clip()` — sudden 15% zoom forward via `vfx.Resize` applied mid-scene
+- [ ] B-Roll swap: within a scene, swap to a second image/clip at the 1.8s mark (requires mid-scene asset split)
+- [ ] Topic-aware image prompt routing expansion: 20+ company/topic mappings in `_DD_TOPIC_MAP`
+- [ ] `voice_breaking_news` routing: detect "breaking news" scene beats and switch to Antoni voice mid-digest
+
+**⚠️ Architecture Note**: At 1.8s intervals, a 60s video generates 33+ state transitions. Benchmark render time before committing — currently renders take 3–4 min; dense pacing could push this to 8–10 min. Consider pre-rendering background as a single clip via ffmpeg before the MoviePy compositor layer.
+
+**Estimated**: 1 week
+
+---
+
+### Daily Digest — Sprint 3: Cinematic Transitions 🟠 PLANNED
+**Priority**: 🟢 P2 (Medium)  
+**Target**: Q3 2026  
+
+**Overview**: Add Digital Glitch and Light Leak transitions for pattern interrupts. This requires an **architectural decision** to migrate transitions from MoviePy to ffmpeg complex filter chains (10× faster render time).
+
+**Features**:
+- [ ] **Architecture decision**: Migrate Daily Digest transition layer from MoviePy compositing to ffmpeg filter chains (`xfade` filter for glitch, `gblur`+`fade` for light leak)
+- [ ] Digital Glitch transition (0.2s) — pixel scatter + RGB channel shift effect
+- [ ] Light Leak transition (0.3s) — warm overexposure bloom wipe
+- [ ] Flash frame (1 frame white) for hard pattern interrupt moments
+- [ ] Per-word "Pop" caption animation via ffmpeg ASS subtitle renderer (NOT MoviePy clips — see warning)
+
+**⚠️ DO NOT** implement per-word pop animation via MoviePy `TextClip` objects — a 60s video generates 200+ concurrent clip objects causing memory pressure and 3–5× render time regression. Use ffmpeg ASS subtitle format with `\fscx` scale animation instead.
+
+**Estimated**: 2 weeks (including ffmpeg transition architecture)
+
+---
+
 
 ## Phase 4: Enterprise Platform 🟠 PLANNED
 **Timeline**: Months 8-10 (Jul - Sep 2026)  
@@ -412,6 +457,37 @@ Extract key insights from any YouTube video and create viral Shorts with two cre
 - Motion graphics
 
 **Estimated**: 3-4 weeks
+
+---
+
+### Multi-Agent Orchestration (ADK-Powered Pipeline)
+**Priority**: 🔵 P3 (Low)  
+**Issue**: [#031 - Multi-Agent Orchestration](#issue-031)  
+**Added**: 2026-03-03
+
+**Overview**:
+Replace the monolithic generation flow with a **team of specialist agents** orchestrated via Google's Agent Development Kit (ADK). Each agent owns a single responsibility with a tight, focused prompt — eliminating the confusion and fragility of one large prompt juggling too many instructions.
+
+**Agent Team**:
+- **ScriptWriterAgent** — draft narrative (persona, tone, scene structure)
+- **ImageSourcingAgent** — autonomously search and pull visuals per scene (Pexels / Gemini / Unsplash)
+- **AudioGenAgent** — TTS generation per scene in parallel
+- **VideoCompilerAgent** — stitch assets (images, audio, subtitles, music)
+- **QualityGateAgent** *(optional)* — pre-render review before expensive compilation
+- **PublisherAgent** *(optional)* — YouTube upload + scheduling
+
+**Orchestration Modes** (ADK-native):
+- Sequential pipeline (default)
+- Parallel fan-out per scene (image + audio simultaneously)
+- Intelligent routing (QualityGate decides: re-write or proceed)
+
+**Expected Impact**:
+- ~40% faster generation (parallel scene processing)
+- Per-agent retry isolation (no full-pipeline restarts)
+- Per-agent observability (easy quality debugging)
+- High extensibility: new content type = new agent variant, not a 500-line prompt edit
+
+**Estimated**: 3-4 weeks (phased: script → image/audio → compiler → orchestrator)
 
 ---
 

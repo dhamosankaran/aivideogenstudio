@@ -73,7 +73,7 @@ export default function ContentLibrary() {
 
     const handlePageChange = (newPage) => {
         setFilters(prev => ({ ...prev, page: newPage }));
-        setSelected([]); // Clear selection when page changes
+        // NOTE: intentionally NOT clearing selected — users can pick articles across multiple pages
     };
 
     const handleSelect = (articleId) => {
@@ -92,6 +92,11 @@ export default function ContentLibrary() {
         } else {
             setSelected(articles.map(a => a.id));
         }
+    };
+
+    const handleCreateDigest = () => {
+        if (selected.length < 2) return;
+        navigateTo('daily-digest', { article_ids: selected.join(',') });
     };
 
     const handleGenerateScripts = async (contentType) => {
@@ -172,7 +177,7 @@ export default function ContentLibrary() {
     };
 
     return (
-        <div className="content-library">
+        <div className={`content-library${selected.length > 0 ? ' content-library--has-selection' : ''}`}>
             <div className="content-library-header">
                 <div className="header-content">
                     <div className="header-text">
@@ -306,6 +311,7 @@ export default function ContentLibrary() {
                 <BulkActions
                     count={selected.length}
                     onGenerate={handleGenerateScripts}
+                    onCreateDigest={handleCreateDigest}
                     onDelete={async () => {
                         if (window.confirm(`Are you sure you want to delete ${selected.length} articles?`)) {
                             try {

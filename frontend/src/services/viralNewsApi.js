@@ -98,11 +98,11 @@ export async function createArticle(sourceId, angleIndex = 0, customAngle = null
  * Generate a script from a viral news source for preview.
  * Named alias used by ViralNews.jsx
  */
-export async function generateViralNewsScript(sourceId, angleIndex = 0, customAngle = null) {
+export async function generateViralNewsScript(sourceId, angleIndex = 0, customAngle = null, videoDuration = '60s') {
     const response = await fetch(`${API_BASE}/sources/${sourceId}/generate-script`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ angle_index: angleIndex, custom_angle: customAngle })
+        body: JSON.stringify({ angle_index: angleIndex, custom_angle: customAngle, video_duration: videoDuration })
     });
     if (!response.ok) {
         const error = await response.json();
@@ -127,6 +127,7 @@ export async function generateViralNewsVideo(
     backgroundMode = 'auto',
     imageSource = 'stock',
     videoSource = 'stock',
+    videoDuration = '60s',
 ) {
     const body = {
         angle_index: angleIndex,
@@ -137,6 +138,7 @@ export async function generateViralNewsVideo(
         background_mode: backgroundMode,
         image_source: imageSource,
         video_source: videoSource,
+        video_duration: videoDuration,
     };
 
     const response = await fetch(`${API_BASE}/sources/${sourceId}/generate-video`, {

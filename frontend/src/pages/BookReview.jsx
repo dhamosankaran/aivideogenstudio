@@ -25,6 +25,7 @@ function BookReview() {
     const [selectedAngle, setSelectedAngle] = useState(0);
     const [error, setError] = useState(null);
     const [successMessage, setSuccessMessage] = useState(null);
+    const [duplicateInfo, setDuplicateInfo] = useState(null);  // Set when re-selecting an existing book
     const [isAnalyzing, setIsAnalyzing] = useState(false);
     const [isGenerating, setIsGenerating] = useState(false);
     const [generationStep, setGenerationStep] = useState('');
@@ -46,6 +47,8 @@ function BookReview() {
     const [imageSource, setImageSource] = useState('stock');
     // Video source state
     const [videoSource, setVideoSource] = useState('stock');
+    // Veo style state (only relevant when videoSource === 'veo')
+    const [veoStyle, setVeoStyle] = useState('auto');
     // Load existing books on mount
     useEffect(() => {
         loadBooks();
@@ -86,6 +89,7 @@ function BookReview() {
     const handleSelectSearchResult = async (bookData) => {
         setError(null);
         setSuccessMessage(null);
+        setDuplicateInfo(null);
 
         try {
             const book = await selectBook(bookData);
@@ -93,6 +97,15 @@ function BookReview() {
             setSearchResults([]);
             setSearchQuery('');
             loadBooks(); // Refresh library
+
+            if (book.already_existed) {
+                setDuplicateInfo(
+                    `📚 "${book.title}" is already in your library${book.analysis_status === 'completed' ? ' and has been analyzed' : ''
+                    }. Loaded its existing details below.`
+                );
+            } else {
+                setSuccessMessage(`✅ "${book.title}" added to your library.`);
+            }
         } catch (err) {
             setError(err.message);
         }
@@ -212,7 +225,8 @@ function BookReview() {
                 selectedVoice,
                 backgroundMode,
                 imageSource,
-                videoSource
+                videoSource,
+                veoStyle
             );
 
             setGenerationStep('Video rendering in background...');
@@ -274,41 +288,52 @@ function BookReview() {
 
                 {error && <div className="book-error">{error}</div>}
                 {successMessage && <div className="book-success">{successMessage}</div>}
+                {duplicateInfo && (
+                    <div className="book-duplicate-info">{duplicateInfo}</div>
+                )}
 
                 {/* Search Results */}
                 {searchResults.length > 0 && (
                     <div className="book-search-results">
                         <h4>Search Results</h4>
                         <div className="search-results-grid">
-                            {searchResults.map((result, index) => (
-                                <div
-                                    key={index}
-                                    className="search-result-card"
-                                    onClick={() => handleSelectSearchResult(result)}
-                                >
-                                    <div className="result-cover">
-                                        {result.cover_url ? (
-                                            <img src={result.cover_url} alt="" />
-                                        ) : (
-                                            <div className="cover-placeholder">📕</div>
+                            {searchResults.map((result, index) => {
+                                const isInLibrary = books.some(
+                                    b => b.open_library_key === result.open_library_key
+                                );
+                                return (
+                                    <div
+                                        key={index}
+                                        className={`search-result-card ${isInLibrary ? 'in-library' : ''}`}
+                                        onClick={() => handleSelectSearchResult(result)}
+                                    >
+                                        {isInLibrary && (
+                                            <div className="in-library-badge">📚 In Library</div>
                                         )}
+                                        <div className="result-cover">
+                                            {result.cover_url ? (
+                                                <img src={result.cover_url} alt="" />
+                                            ) : (
+                                                <div className="cover-placeholder">📕</div>
+                                            )}
+                                        </div>
+                                        <div className="result-info">
+                                            <div className="result-title">{result.title}</div>
+                                            <div className="result-author">{result.author || 'Unknown Author'}</div>
+                                            {result.first_publish_year && (
+                                                <div className="result-year">Published: {result.first_publish_year}</div>
+                                            )}
+                                            {result.subjects && result.subjects.length > 0 && (
+                                                <div className="result-subjects">
+                                                    {result.subjects.slice(0, 3).map((subject, i) => (
+                                                        <span key={i} className="subject-tag">{subject}</span>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
                                     </div>
-                                    <div className="result-info">
-                                        <div className="result-title">{result.title}</div>
-                                        <div className="result-author">{result.author || 'Unknown Author'}</div>
-                                        {result.first_publish_year && (
-                                            <div className="result-year">Published: {result.first_publish_year}</div>
-                                        )}
-                                        {result.subjects && result.subjects.length > 0 && (
-                                            <div className="result-subjects">
-                                                {result.subjects.slice(0, 3).map((subject, i) => (
-                                                    <span key={i} className="subject-tag">{subject}</span>
-                                                ))}
-                                            </div>
-                                        )}
-                                    </div>
-                                </div>
-                            ))}
+                                );
+                            })}
                         </div>
                     </div>
                 )}
@@ -733,6 +758,43 @@ function BookReview() {
                                                     </label>
                                                 ))}
                                             </div>
+
+                                            {/* Veo Style — only shown when Gemini Veo is selected */}
+                                            {videoSource === 'veo' && (
+                                                <>
+                                                    <p style={{ fontSize: '0.85rem', color: '#a0855a', marginBottom: '0.5rem', marginTop: '1.2rem' }}>
+                                                        Veo Style
+                                                    </p>
+                                                    <div className="tts-provider-grid">
+                                                        {[
+                                                            { id: 'auto', label: '✨ Auto', desc: 'Scene 3 → Whiteboard · Scenes 4 & 6 → Illustration', badge: 'Recommended' },
+                                                            { id: 'cinematic', label: '🎬 Cinematic', desc: 'Real-world environments, dramatic camera moves', badge: null },
+                                                            { id: 'whiteboard', label: '✏️ Whiteboard', desc: 'Hand drawing on white canvas, all scenes', badge: null },
+                                                            { id: 'illustration', label: '🖼️ Illustration', desc: '2D flat diagrams & motion graphics, all scenes', badge: null },
+                                                        ].map(style => (
+                                                            <label
+                                                                key={style.id}
+                                                                className={`tts-provider-card ${veoStyle === style.id ? 'selected' : ''}`}
+                                                            >
+                                                                <input
+                                                                    type="radio"
+                                                                    name="veo-style"
+                                                                    value={style.id}
+                                                                    checked={veoStyle === style.id}
+                                                                    onChange={() => setVeoStyle(style.id)}
+                                                                />
+                                                                <div className="provider-info">
+                                                                    <span className="provider-name">{style.label}</span>
+                                                                    <span className="provider-cost" style={{ fontSize: '0.72rem' }}>{style.desc}</span>
+                                                                </div>
+                                                                {style.badge && (
+                                                                    <span className="recommended-badge">✨ {style.badge}</span>
+                                                                )}
+                                                            </label>
+                                                        ))}
+                                                    </div>
+                                                </>
+                                            )}
 
                                             {/* Background Mode */}
                                             <p style={{ fontSize: '0.85rem', color: '#a0855a', marginBottom: '0.5rem', marginTop: '1.2rem' }}>

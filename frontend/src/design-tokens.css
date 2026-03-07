@@ -1,31 +1,55 @@
 /* ============================================================
-   AIVideoGen Studio — Design Tokens
+   AIVideoGen Studio — Design Tokens v2
+   Deep Navy Professional Dark Theme
    Single source of truth for all visual constants.
    Import this file FIRST in index.css.
    ============================================================ */
 
 :root {
-    /* ── Color Palette ── */
+    /* ── Core Brand Colors ── */
     --color-primary: #6366f1;
     --color-primary-hover: #4f46e5;
     --color-primary-light: #818cf8;
-    --color-primary-soft: rgba(99, 102, 241, 0.1);
-    --color-primary-ring: rgba(99, 102, 241, 0.25);
+    --color-primary-soft: rgba(99, 102, 241, 0.12);
+    --color-primary-ring: rgba(99, 102, 241, 0.3);
     --color-secondary: #8b5cf6;
-    --color-secondary-soft: rgba(139, 92, 246, 0.1);
+    --color-secondary-soft: rgba(139, 92, 246, 0.12);
 
-    --color-success: #10b981;
-    --color-success-soft: rgba(16, 185, 129, 0.1);
-    --color-success-hover: #059669;
+    /* ── Extended Palette ── */
+    --color-blue: #3b82f6;
+    --color-blue-hover: #2563eb;
+    --color-blue-soft: rgba(59, 130, 246, 0.12);
+    --color-orange: #ff6b35;
+    --color-orange-hover: #e55a24;
+    --color-orange-soft: rgba(255, 107, 53, 0.12);
+    --color-cyan: #22d3ee;
+    --color-cyan-soft: rgba(34, 211, 238, 0.12);
+
+    --color-success: #22c55e;
+    --color-success-soft: rgba(34, 197, 94, 0.12);
+    --color-success-hover: #16a34a;
     --color-warning: #f59e0b;
-    --color-warning-soft: rgba(245, 158, 11, 0.1);
+    --color-warning-soft: rgba(245, 158, 11, 0.12);
     --color-error: #ef4444;
-    --color-error-soft: rgba(239, 68, 68, 0.1);
+    --color-error-soft: rgba(239, 68, 68, 0.12);
     --color-error-hover: #dc2626;
     --color-info: #3b82f6;
-    --color-info-soft: rgba(59, 130, 246, 0.1);
+    --color-info-soft: rgba(59, 130, 246, 0.12);
 
-    /* ── Neutrals ── */
+    /* ── Deep Navy Neutrals ── */
+    --navy-50: #e8edf7;
+    --navy-100: #c4cee8;
+    --navy-200: #8fa4c9;
+    --navy-300: #5e7aaa;
+    --navy-400: #3e5a8a;
+    --navy-500: #2a3f6b;
+    --navy-600: #1e2d52;
+    --navy-700: #152040;
+    --navy-800: #0e1629;
+    --navy-900: #0a0f1c;
+    --navy-950: #080c14;
+
+    /* Legacy gray scale (keep for compatibility) */
     --gray-50: #f9fafb;
     --gray-100: #f3f4f6;
     --gray-200: #e5e7eb;
@@ -38,22 +62,48 @@
     --gray-900: #111827;
     --gray-950: #030712;
 
-    /* ── Surfaces ── */
-    --surface-page: #f8f9fc;
-    --surface-card: #ffffff;
-    --surface-sidebar: #0f172a;
-    --surface-sidebar-hover: rgba(255, 255, 255, 0.08);
-    --surface-sidebar-active: rgba(99, 102, 241, 0.15);
-    --surface-elevated: #ffffff;
-    --surface-overlay: rgba(0, 0, 0, 0.5);
+    /* ── Surfaces (Deep Navy Theme) ── */
+    --surface-page: var(--navy-950);
+    /* #080c14 — page background */
+    --surface-sidebar: var(--navy-900);
+    /* #0a0f1c — sidebar */
+    --surface-card: var(--navy-800);
+    /* #0e1629 — card surface */
+    --surface-card-hover: #111e36;
+    /* slightly lighter on hover */
+    --surface-input: rgba(14, 22, 41, 0.8);
+    /* input backgrounds */
+    --surface-elevated: #131d34;
+    /* modals, dropdowns */
+    --surface-overlay: rgba(4, 7, 18, 0.75);
 
-    /* ── Text ── */
-    --text-primary: #111827;
-    --text-secondary: #6b7280;
-    --text-muted: #9ca3af;
+    /* Sidebar specifics */
+    --surface-sidebar-hover: rgba(255, 255, 255, 0.06);
+    --surface-sidebar-active: rgba(99, 102, 241, 0.18);
+
+    /* ── Border Colors ── */
+    --border-default: 1px solid #1e2a42;
+    --border-subtle: 1px solid rgba(255, 255, 255, 0.05);
+    --border-card: #1e2a42;
+    /* bare color for border-color */
+    --border-card-hover: #2d3f5e;
+    --border-active: var(--color-primary);
+    --border-focus: rgba(99, 102, 241, 0.5);
+
+    /* ── Text on Dark ── */
+    --text-primary: #e8edf7;
+    /* main body text */
+    --text-secondary: #8fa4c9;
+    /* secondary/supporting */
+    --text-muted: #4a5f80;
+    /* muted labels */
     --text-on-dark: #e2e8f0;
-    --text-on-dark-muted: #94a3b8;
+    --text-on-dark-muted: #5e7aaa;
     --text-on-primary: #ffffff;
+    --text-heading: #f0f4fc;
+    /* page headings */
+    --text-label: #3e5a8a;
+    /* uppercase section labels */
 
     /* ── Typography ── */
     --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -83,6 +133,7 @@
     --tracking-tight: -0.025em;
     --tracking-normal: 0;
     --tracking-wide: 0.025em;
+    --tracking-widest: 0.1em;
 
     /* ── Spacing (4px base) ── */
     --space-0: 0;
@@ -115,9 +166,6 @@
     /* 80px */
 
     /* ── Borders & Radius ── */
-    --border-default: 1px solid var(--gray-200);
-    --border-subtle: 1px solid var(--gray-100);
-
     --radius-sm: 6px;
     --radius-md: 8px;
     --radius-lg: 12px;
@@ -125,19 +173,34 @@
     --radius-2xl: 20px;
     --radius-full: 9999px;
 
-    /* ── Shadows (elevation) ── */
-    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.05);
-    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
-    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-    --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
-    --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
-    --shadow-2xl: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
-    --shadow-inner: inset 0 2px 4px rgba(0, 0, 0, 0.06);
+    /* ── Elevation Shadows (dark-mode appropriate) ── */
+    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4), 0 2px 4px -1px rgba(0, 0, 0, 0.3);
+    --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.5), 0 4px 6px -2px rgba(0, 0, 0, 0.3);
+    --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.6), 0 10px 10px -5px rgba(0, 0, 0, 0.3);
+    --shadow-2xl: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
+    --shadow-inner: inset 0 2px 4px rgba(0, 0, 0, 0.3);
 
-    /* Colored shadows for primary buttons */
-    --shadow-primary: 0 4px 14px rgba(99, 102, 241, 0.4);
-    --shadow-success: 0 4px 14px rgba(16, 185, 129, 0.4);
-    --shadow-error: 0 4px 14px rgba(239, 68, 68, 0.3);
+    /* Colored glow shadows */
+    --shadow-glow-primary: 0 0 20px rgba(99, 102, 241, 0.35), 0 4px 14px rgba(99, 102, 241, 0.25);
+    --shadow-glow-blue: 0 0 20px rgba(59, 130, 246, 0.35), 0 4px 14px rgba(59, 130, 246, 0.25);
+    --shadow-glow-orange: 0 0 20px rgba(255, 107, 53, 0.35), 0 4px 14px rgba(255, 107, 53, 0.25);
+    --shadow-glow-success: 0 0 20px rgba(34, 197, 94, 0.35), 0 4px 14px rgba(34, 197, 94, 0.25);
+    --shadow-glow-error: 0 0 20px rgba(239, 68, 68, 0.3), 0 4px 14px rgba(239, 68, 68, 0.2);
+    --shadow-primary: var(--shadow-glow-primary);
+    --shadow-success: var(--shadow-glow-success);
+    --shadow-error: var(--shadow-glow-error);
+
+    /* ── Gradient Tokens ── */
+    --gradient-brand: linear-gradient(135deg, #6366f1, #8b5cf6);
+    --gradient-indigo: linear-gradient(135deg, #6366f1, #4f46e5);
+    --gradient-blue: linear-gradient(135deg, #3b82f6, #2563eb);
+    --gradient-orange: linear-gradient(135deg, #ff6b35, #e63946);
+    --gradient-violet: linear-gradient(135deg, #8b5cf6, #6d28d9);
+    --gradient-success: linear-gradient(135deg, #22c55e, #16a34a);
+    --gradient-sidebar-brand: linear-gradient(135deg, #c7d2fe, #ddd6fe);
+    --gradient-card-hover: linear-gradient(135deg, rgba(99, 102, 241, 0.05), transparent 60%);
 
     /* ── Transitions ── */
     --ease-default: cubic-bezier(0.4, 0, 0.2, 1);
@@ -155,6 +218,7 @@
     --sidebar-collapsed: 72px;
     --content-max-width: 1400px;
     --header-height: 64px;
+    --content-padding: 1.75rem 2rem;
 
     /* ── Z-index scale ── */
     --z-base: 1;

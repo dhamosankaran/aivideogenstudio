@@ -28,6 +28,9 @@ class ElevenLabsTTSProvider(BaseTTSProvider):
         "Bill":    "pqHfZKP75CvOlQylNhV4",
         "Grace":   "oWAxZDx7w5VEj9dCyTzz",
         "Amelia":  "OYTbf65OHHFELVut7v2H",
+        # AI Insider personas — Daily Digest
+        "Thomas":  "GBv7mTt0atIp3Br8iCZE",  # Deep-dives & "Insider" leaks
+        "Antoni":  "ErXwobaYiN019PkySvjV",  # Fast-paced breaking news
     }
 
     # Available models
@@ -95,9 +98,11 @@ class ElevenLabsTTSProvider(BaseTTSProvider):
             "text": text,
             "model_id": model_id,
             "voice_settings": {
-                "stability": kwargs.get("stability", 0.5),
+                # AI Insider defaults: balanced consistency + analyst gravity
+                # Override via kwargs at call site for non-digest content types.
+                "stability": kwargs.get("stability", 0.45),
                 "similarity_boost": kwargs.get("similarity_boost", 0.75),
-                "style": kwargs.get("style", 0.0),
+                "style": kwargs.get("style", 0.15),
                 "use_speaker_boost": kwargs.get("use_speaker_boost", True),
             }
         }

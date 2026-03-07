@@ -231,25 +231,32 @@ class VideoCompositionService:
     # Video Validation Methods (Issue #017)
     
     def get_pending_videos(self) -> List[Video]:
-        """Get all videos with pending validation status."""
+        """Get all videos with pending validation status, including failed ones with files on disk."""
         videos = self.db.query(Video).filter(
             Video.validation_status == "pending",
-            Video.status.in_(["pending", "rendering", "completed"])
+            Video.status.in_(["pending", "rendering", "completed", "failed"])
         ).order_by(Video.created_at.desc()).all()
 
-        # Data Integrity Check: Ensure files exist for completed videos
+        # Integrity check: heal failed videos whose file is on disk, mark completed ones whose file is gone
         for video in videos:
-            if video.status == "completed" and video.file_path:
-                path = Path(video.file_path)
-                if not path.exists():
-                     # Check relative path
-                    if not (Path.cwd() / path).exists():
-                        logger.warning(f"Video file missing for Video {video.id}. marking as failed.")
-                        video.status = "failed"
-                        video.error_message = "File lost from disk (server restart?)"
-                        self.db.add(video)
-        
-        self.db.commit() # Commit any status changes
+            if not video.file_path:
+                continue
+            path = Path(video.file_path)
+            file_exists = path.exists() or (Path.cwd() / path).exists()
+            if file_exists and video.status == "failed":
+                # File is present — video actually rendered; restore it so it can be reviewed
+                logger.info(f"[VideoService] Healing Video {video.id}: file found on disk, status → completed")
+                video.status = "completed"
+                video.error_message = None
+                self.db.add(video)
+            elif not file_exists and video.status == "completed":
+                # File is gone — can't play or approve it
+                logger.warning(f"[VideoService] Video {video.id}: file missing from disk, status → failed")
+                video.status = "failed"
+                video.error_message = "File lost from disk"
+                self.db.add(video)
+
+        self.db.commit()
         return videos
     
     def get_video_with_metadata(self, video_id: int) -> Optional[Dict]:

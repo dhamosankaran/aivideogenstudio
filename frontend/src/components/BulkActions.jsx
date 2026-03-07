@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import './BulkActions.css';
 
-export default function BulkActions({ count, onGenerate, onDelete, generating }) {
+export default function BulkActions({ count, onGenerate, onDelete, onCreateDigest, generating }) {
     const [contentType, setContentType] = useState('daily_update');
 
     const handleGenerate = () => {
@@ -51,10 +51,20 @@ export default function BulkActions({ count, onGenerate, onDelete, generating })
                     </button>
 
                     <button
+                        onClick={onCreateDigest}
+                        disabled={generating || count < 2}
+                        className="btn-digest"
+                        style={{ marginLeft: '8px', background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: 'white', border: 'none', padding: '0 16px', borderRadius: '6px', cursor: count < 2 ? 'not-allowed' : 'pointer', height: '100%', opacity: count < 2 ? 0.5 : 1, fontWeight: 500 }}
+                        title={count < 2 ? 'Select at least 2 articles to create a digest' : `Create a single combined digest video from ${count} articles`}
+                    >
+                        📡 Create Digest ({count})
+                    </button>
+
+                    <button
                         onClick={onDelete}
                         disabled={generating}
                         className="btn-delete"
-                        style={{ marginLeft: '12px', backgroundColor: '#ef4444', color: 'white', border: 'none', padding: '0 16px', borderRadius: '6px', cursor: 'pointer', height: '100%' }}
+                        style={{ marginLeft: '8px', backgroundColor: '#ef4444', color: 'white', border: 'none', padding: '0 16px', borderRadius: '6px', cursor: 'pointer', height: '100%' }}
                     >
                         Delete
                     </button>

@@ -104,7 +104,7 @@ CONTENT_TYPES = {
         "music": "Tech.mp3",
         "cta": "Subscribe for Viral News!",
         "footer": "🔥 Breaking Stories Daily!",
-        "music_volume": 0.12,
+        "music_volume": 0.07,   # narration-forward: voice carries the breaking news energy
     },
 }
 

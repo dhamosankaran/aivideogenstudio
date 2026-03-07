@@ -102,11 +102,18 @@ class ScriptService:
         
         try:
             # Extract full article content from URL (Phase 1: Web Crawling)
+            # Run in thread pool — trafilatura.fetch_url is synchronous and would
+            # block the async event loop (and all other requests) for up to 30s per article.
+            import asyncio
             article_content = article.content or article.description or ""
-            if article.url:
-                full_content, was_extracted = extract_article_content(
-                    url=article.url,
-                    fallback_content=article_content
+            if article.url and not article.url.startswith(("digest://", "manual://")):
+                loop = asyncio.get_event_loop()
+                full_content, was_extracted = await loop.run_in_executor(
+                    None,
+                    lambda: extract_article_content(
+                        url=article.url,
+                        fallback_content=article_content,
+                    )
                 )
                 if was_extracted:
                     logger.info(f"Using extracted content ({len(full_content)} chars) for article {article.id}")
@@ -118,8 +125,9 @@ class ScriptService:
             content_type = getattr(article, 'suggested_content_type', '') or ''
             is_book_review = content_type == 'book_review'
             is_viral_news = content_type == 'viral_news'
-            
-            # Override target duration per content type
+            is_daily_digest = content_type == 'daily_update'
+
+            # Adjust target duration / detect persona per content type
             genre_strategy = None
             if is_book_review:
                 target_duration = 85
@@ -137,22 +145,30 @@ class ScriptService:
                     logger.warning(f"[GenreStrategy] Detection failed, using default: {e}")
             
             elif is_viral_news:
-                target_duration = 60
-                logger.info(f"Viral news detected – using 60s target with 4-scene Breaking News structure")
-                
-                # Detect news category persona
+                # Respect the caller-supplied target_duration (60 / 120 / 300s).
+                # DO NOT override — the prompt has duration-aware scene structures.
+                logger.info(f"Viral news detected – using {target_duration}s target")
+
+            elif is_daily_digest:
+                # Respect the caller-supplied target_duration (60s or 90s).
+                # Digest articles have synthetic digest:// URLs — skip web extraction.
+                logger.info(f"Daily AI digest detected – using {target_duration}s roundup format")
+                article_content = article.content or ""  # stories JSON stored at creation time
+
+                # Detect news category persona via viral_news_source relationship
                 try:
                     from app.services.news_strategy import NewsStrategyRegistry
-                    news_category = getattr(article, 'suggested_content_type', '') or ''
-                    # Try to extract category from article metadata
                     article_category = ''
-                    if hasattr(article, 'news_source') and article.news_source:
-                        article_category = getattr(article.news_source, 'news_category', '') or ''
+                    if hasattr(article, 'viral_news_source') and article.viral_news_source:
+                        article_category = getattr(article.viral_news_source, 'news_category', '') or ''
                     genre_strategy = NewsStrategyRegistry.detect(
                         category=article_category,
                         title=article.title or ''
                     )
-                    logger.info(f"[NewsStrategy] Using persona: {genre_strategy.get('name', 'default')}")
+                    logger.info(
+                        f"[NewsStrategy] category='{article_category}' "
+                        f"→ persona='{genre_strategy.get('name', 'default')}'"
+                    )
                 except Exception as e:
                     logger.warning(f"[NewsStrategy] Detection failed, using default: {e}")
             
@@ -210,15 +226,42 @@ class ScriptService:
                 else:
                     raise ValueError(f"Failed to parse script JSON: {e}")
 
-            scenes_data = [
-                {
+            scenes_data = []
+            num_scenes = len(script_data.scenes)
+            for idx, s in enumerate(script_data.scenes):
+                scene_dict = {
                     "scene_number": s.scene_number,
                     "text": s.text,
                     "visual_cues": s.visual_cues,
                     "image_keywords": s.image_keywords,
-                    "transition_hint": s.transition_hint or "fade"
-                } for s in script_data.scenes
-            ]
+                    "transition_hint": s.transition_hint or "fade",
+                    "story_index": s.story_index or 0,
+                    "company": s.company or "",
+                }
+                # Daily Digest: infer story_index if LLM returned all zeros
+                # Layout:  scene 1 = hook (0), scenes 2..N-2 = story beats (1,2,3..),
+                #          scene N-1 = connecting thread (0), scene N = CTA (0)
+                if is_daily_digest and scene_dict["story_index"] == 0 and num_scenes >= 5:
+                    if idx == 0:
+                        pass  # hook → 0
+                    elif idx == num_scenes - 1:
+                        pass  # CTA → 0
+                    elif idx == num_scenes - 2:
+                        pass  # connecting thread → 0
+                    else:
+                        scene_dict["story_index"] = idx  # story beat 1, 2, 3...
+                        # Extract company from text if not provided
+                        if not scene_dict["company"]:
+                            try:
+                                from app.services.daily_digest_service import _extract_company
+                                scene_dict["company"] = _extract_company(s.text)
+                            except Exception:
+                                pass
+                        logger.info(
+                            f"[DD] Inferred story_index={idx}, company='{scene_dict['company']}' "
+                            f"for scene {s.scene_number}"
+                        )
+                scenes_data.append(scene_dict)
             
             # Build raw script for display/review
             raw_script = f"[HOOK]\n{script_data.hook}\n\n"

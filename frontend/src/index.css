@@ -1,9 +1,12 @@
 /* ============================================================
    AIVideoGen Studio — Global Styles
-   Imports design tokens and sets base element styles.
+   Deep Navy Dark Theme — v2
    ============================================================ */
 
 @import './design-tokens.css';
+
+/* ── Google Fonts ── */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
 
 /* ── Reset & Base ── */
 *,
@@ -30,10 +33,17 @@ html {
 body {
   min-height: 100vh;
   min-width: 320px;
+  background-color: var(--surface-page);
 }
 
 #root {
   min-height: 100vh;
+}
+
+/* ── Selection Color ── */
+::selection {
+  background: rgba(99, 102, 241, 0.35);
+  color: #e8edf7;
 }
 
 /* ── Typography ── */
@@ -46,7 +56,7 @@ h6 {
   line-height: var(--leading-tight);
   letter-spacing: var(--tracking-tight);
   font-weight: 700;
-  color: var(--text-primary);
+  color: var(--text-heading);
 }
 
 h1 {
@@ -72,14 +82,15 @@ p {
 
 /* ── Links ── */
 a {
-  color: var(--color-primary);
+  color: var(--color-primary-light);
   text-decoration: none;
   font-weight: 500;
   transition: color var(--transition-fast);
 }
 
 a:hover {
-  color: var(--color-primary-hover);
+  color: var(--color-primary-light);
+  opacity: 0.85;
 }
 
 /* ── Buttons (global reset) ── */
@@ -105,7 +116,7 @@ button:focus-visible {
 }
 
 button:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
@@ -117,7 +128,7 @@ textarea {
   font-size: var(--text-sm);
   color: var(--text-primary);
   background: var(--surface-card);
-  border: 1px solid var(--gray-300);
+  border: 1px solid var(--border-card);
   border-radius: var(--radius-md);
   padding: var(--space-2) var(--space-3);
   transition: all var(--transition-fast);
@@ -128,7 +139,7 @@ input:focus,
 select:focus,
 textarea:focus {
   outline: none;
-  border-color: var(--color-primary);
+  border-color: var(--border-focus);
   box-shadow: 0 0 0 3px var(--color-primary-ring);
 }
 
@@ -150,23 +161,23 @@ textarea::placeholder {
   border: 0;
 }
 
-/* ── Scrollbar (subtle) ── */
+/* ── Scrollbar (dark, subtle) ── */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
 }
 
 ::-webkit-scrollbar-track {
-  background: transparent;
+  background: var(--navy-900);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--gray-300);
+  background: #2a3f6b;
   border-radius: var(--radius-full);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--gray-400);
+  background: #3e5a8a;
 }
 
 /* ── Animations ── */
@@ -189,7 +200,7 @@ textarea::placeholder {
 @keyframes fadeIn {
   from {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(10px);
   }
 
   to {
@@ -201,12 +212,24 @@ textarea::placeholder {
 @keyframes slideInRight {
   from {
     opacity: 0;
-    transform: translateX(16px);
+    transform: translateX(18px);
   }
 
   to {
     opacity: 1;
     transform: translateX(0);
+  }
+}
+
+@keyframes pulse-glow {
+
+  0%,
+  100% {
+    box-shadow: 0 0 8px rgba(99, 102, 241, 0.3);
+  }
+
+  50% {
+    box-shadow: 0 0 20px rgba(99, 102, 241, 0.6);
   }
 }
 
@@ -226,15 +249,18 @@ textarea::placeholder {
 .loading-spinner {
   width: 32px;
   height: 32px;
-  border: 3px solid var(--gray-200);
-  border-top-color: var(--color-primary);
+  border: 3px solid rgba(255, 255, 255, 0.08);
+  border-top-color: var(--color-primary-light);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
 
-/* Skeleton loading */
+/* Skeleton loading (dark theme) */
 .skeleton {
-  background: linear-gradient(90deg, var(--gray-100) 25%, var(--gray-200) 50%, var(--gray-100) 75%);
+  background: linear-gradient(90deg,
+      var(--navy-800) 25%,
+      var(--navy-700) 50%,
+      var(--navy-800) 75%);
   background-size: 400% 100%;
   animation: shimmer 1.5s ease-in-out infinite;
   border-radius: var(--radius-md);

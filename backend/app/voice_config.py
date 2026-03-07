@@ -85,6 +85,46 @@ VOICE_PRESETS: Dict[str, Dict[str, Any]] = {
             "tone": "Balanced & trustworthy — informational delivery",
         },
     },
+    "viral_news": {
+        "label": "🔥 Viral News",
+        "default_provider": "openai",
+        "openai": {
+            "voice": "onyx",
+            "speed": 1.05,
+            "tone": "Deep & authoritative — breaking news energy",
+        },
+        "google": {
+            "voice": "en-US-Journey-D",
+            "tone": "Clear male voice — news anchor quality",
+        },
+        "elevenlabs": {
+            "voice": "Brian",
+            "model": "eleven_multilingual_v2",
+            "tone": "Friendly & upbeat — great for viral content",
+        },
+    },
+    "daily_update": {
+        "label": "📡 Daily AI Digest",
+        "default_provider": "elevenlabs",  # AI Insider: ElevenLabs Thomas/Antoni
+        "openai": {
+            "voice": "onyx",
+            "speed": 1.05,
+            "tone": "Deep & authoritative — roundup energy",
+        },
+        "google": {
+            "voice": "en-US-Journey-D",
+            "tone": "Clear male voice — news anchor quality",
+        },
+        "elevenlabs": {
+            "voice": "Thomas",  # AI Insider default — deep-dive & insider leaks
+            "voice_breaking_news": "Antoni",  # Fast-paced breaking news beats
+            "model": "eleven_multilingual_v2",
+            "stability": 0.45,           # Balances consistency with natural delivery
+            "similarity_boost": 0.75,    # Preserves unique "analyst" tone
+            "style": 0.15,               # Subtle "insider" gravity
+            "tone": "Authoritative investigative journalist — AI Insider persona",
+        },
+    },
     "default": {
         "label": "📰 General",
         "default_provider": "openai",
@@ -163,6 +203,9 @@ def get_available_voices() -> Dict[str, List[Dict[str, str]]]:
             {"id": "Bill",    "name": "Bill",    "tone": "Classic American clarity"},
             {"id": "Grace",   "name": "Grace",   "tone": "Natural & sincere"},
             {"id": "Amelia",  "name": "Amelia",  "tone": "Enthusiastic & expressive"},
+            # AI Insider personas
+            {"id": "Thomas",  "name": "Thomas",  "tone": "Deep & authoritative — AI Insider deep-dives"},
+            {"id": "Antoni",  "name": "Antoni",  "tone": "Fast-paced & urgent — breaking news beats"},
         ],
     }
 
@@ -203,3 +246,8 @@ def get_voice_options_for_frontend(content_type: str = "default") -> Dict[str, A
         "providers": providers,
         "voices": get_available_voices(),
     }
+
+
+def get_all_voice_options(content_type: str = "default") -> Dict[str, Any]:
+    """Alias for get_voice_options_for_frontend — used by viral news router."""
+    return get_voice_options_for_frontend(content_type)

@@ -61,6 +61,8 @@ class BookDetail(BaseModel):
     error_message: Optional[str] = None
     created_at: datetime
     analyzed_at: Optional[datetime] = None
+    # True when the book was already in the library (not newly added)
+    already_existed: Optional[bool] = False
     
     class Config:
         from_attributes = True
@@ -96,6 +98,7 @@ class GenerateVideoRequest(BaseModel):
     background_mode: Optional[str] = "auto"  # auto, images_only, videos_only, mixed
     image_source: Optional[str] = "stock"  # stock, ai_generated, auto
     video_source: Optional[str] = "stock"  # stock, veo
+    veo_style: Optional[str] = "auto"  # cinematic, whiteboard, illustration, auto
 
 
 def get_book_service(db: Session = Depends(get_db)) -> BookService:
@@ -133,10 +136,20 @@ async def select_book(
     Select a book from search results to add to library.
     
     Creates or retrieves BookSource record.
+    Returns already_existed=True if the book was already in the library.
     """
     try:
+        from app.models import BookSource
+        # Check existence BEFORE calling get_or_create so we can flag duplicates
+        existing = service.db.query(BookSource).filter(
+            BookSource.open_library_key == book_data.open_library_key
+        ).first()
+        already_existed = existing is not None
+
         book = await service.get_or_create_book(book_data.model_dump())
-        return BookDetail.model_validate(book)
+        detail = BookDetail.model_validate(book)
+        detail.already_existed = already_existed
+        return detail
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to select book: {str(e)}")
 
@@ -365,7 +378,8 @@ async def generate_book_video(
             project_folder=request.project_folder,
             background_mode=request.background_mode or "auto",
             image_source=request.image_source or "stock",
-            video_source=request.video_source or "stock"
+            video_source=request.video_source or "stock",
+            veo_style=request.veo_style or "auto"
         )
         db.commit()
         db.refresh(video)

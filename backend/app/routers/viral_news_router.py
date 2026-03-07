@@ -93,10 +93,14 @@ class ArticleCreatedResponse(BaseModel):
     message: str
 
 
+_DURATION_MAP = {"60s": 60, "120s": 120, "300s": 300}
+
+
 class GenerateScriptRequest(BaseModel):
     """Request to generate a script from a viral news source."""
     angle_index: int = 0
     custom_angle: Optional[str] = None
+    video_duration: str = "60s"  # "60s", "120s", "300s"
 
 
 class GenerateVideoRequest(BaseModel):
@@ -109,6 +113,7 @@ class GenerateVideoRequest(BaseModel):
     background_mode: Optional[str] = "auto"
     image_source: Optional[str] = "stock"
     video_source: Optional[str] = "stock"  # stock, veo
+    video_duration: str = "60s"  # "60s", "120s", "300s"
 
 
 # ── Dependency ───────────────────────────────────────────────────
@@ -249,7 +254,10 @@ async def generate_viral_news_script(
     Generate a script from a viral news source for preview/review.
 
     Uses the shared ScriptService pipeline (same as Book Review) with
-    viral_news-specific prompt, 2-3 urgency-driven scenes, and 25s target.
+    viral_news-specific prompt and duration-aware scene structure:
+      60s  → 4 scenes (Shorts / TikTok)
+      120s → 6 scenes (YouTube Shorts full story)
+      300s → 10 scenes (Regular video deep dive)
     """
     from app.services.script_service import ScriptService
 
@@ -266,14 +274,13 @@ async def generate_viral_news_script(
         logger.info(f"[ViralScript] Article created: {article.id} - {article.title}")
 
         # Step 2: Generate script via shared ScriptService
-        # ScriptService auto-detects content_type='viral_news' and routes to
-        # the viral news prompt (urgency-driven, 2-3 scenes, 25s target)
-        logger.info(f"[ViralScript] Generating script for article {article.id}")
+        target_duration = _DURATION_MAP.get(request.video_duration, 60)
+        logger.info(f"[ViralScript] Generating script for article {article.id} (duration={target_duration}s)")
         script_service = ScriptService(db=db)
         script = await script_service.generate_script(
             article=article,
             style="engaging",
-            target_duration=60,
+            target_duration=target_duration,
         )
         logger.info(f"[ViralScript] Script created: {script.id} ({script.word_count} words, ~{script.estimated_duration:.0f}s)")
 
@@ -346,10 +353,12 @@ async def generate_viral_news_video(
             )
             logger.info(f"[ViralVideo] Article: {article.id}")
 
+            target_duration = _DURATION_MAP.get(request.video_duration, 60)
+            logger.info(f"[ViralVideo] Generating script (duration={target_duration}s)")
             script = await script_service.generate_script(
                 article=article,
                 style="engaging",
-                target_duration=60,
+                target_duration=target_duration,
             )
             script = script_service.approve_script(script.id)
             logger.info(f"[ViralVideo] Script created and approved: {script.id}")

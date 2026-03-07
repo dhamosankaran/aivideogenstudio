@@ -1,0 +1,889 @@
+/* =============================================================
+   DailyDigest.css — v2 Professional Dark Theme
+   Loaded alongside ViralNews.css which provides all shared
+   vn-* layout, button, form classes and design tokens.
+   ============================================================= */
+
+/* ── 1. Step Indicator ─────────────────────────────────────── */
+
+.vn-step-indicator {
+    display: flex;
+    align-items: flex-start;
+    width: 100%;
+    padding: 12px 0 18px;
+}
+
+.vn-step {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    flex-shrink: 0;
+    min-width: 52px;
+}
+
+.vn-step-dot {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    border: 2px solid var(--border-card, #1e2a42);
+    background: var(--surface-card, #0e1629);
+    color: var(--text-muted, #4a5f80);
+    font-size: 0.75rem;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: border-color 0.2s, background 0.2s, color 0.2s, box-shadow 0.2s;
+    z-index: 1;
+    flex-shrink: 0;
+}
+
+.vn-step.active .vn-step-dot {
+    border-color: var(--color-primary, #6366f1);
+    background: var(--color-primary, #6366f1);
+    color: #fff;
+    box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.2), 0 0 16px rgba(99, 102, 241, 0.35);
+}
+
+.vn-step.done .vn-step-dot {
+    border-color: var(--color-success, #22c55e);
+    background: var(--color-success, #22c55e);
+    color: #fff;
+    font-size: 0.85rem;
+    box-shadow: 0 0 12px rgba(34, 197, 94, 0.3);
+}
+
+.vn-step-label {
+    font-size: 0.68rem;
+    color: var(--text-muted, #4a5f80);
+    margin-top: 5px;
+    white-space: nowrap;
+    font-weight: 500;
+}
+
+.vn-step.active .vn-step-label {
+    color: var(--color-primary-light, #818cf8);
+    font-weight: 700;
+}
+
+.vn-step.done .vn-step-label {
+    color: var(--color-success, #22c55e);
+    opacity: 0.8;
+}
+
+/* Connector line */
+.vn-step-line {
+    flex: 1;
+    height: 2px;
+    background: var(--border-card, #1e2a42);
+    min-width: 10px;
+    margin-top: 13px;
+    transition: background 0.3s;
+}
+
+.vn-step-line.done {
+    background: rgba(34, 197, 94, 0.4);
+}
+
+/* ── 2. Controls row (date filter + search) ────────────────── */
+
+.vn-controls-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+}
+
+.vn-filter-row {
+    display: flex;
+    gap: 6px;
+}
+
+/* ── 4. Article grid + cards ───────────────────────────────── */
+
+.vn-article-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+    gap: 10px;
+    margin-top: 10px;
+}
+
+.vn-article-card {
+    background: var(--surface-card, #0e1629);
+    border: 1px solid var(--border-card, #1e2a42);
+    border-radius: 12px;
+    padding: 14px;
+    cursor: pointer;
+    position: relative;
+    transition: border-color 0.15s, background 0.15s, box-shadow 0.15s, transform 0.15s;
+}
+
+.vn-article-card:hover {
+    border-color: var(--border-card-hover, #2d3f5e);
+    background: var(--surface-card-hover, #111e36);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+.vn-article-card.selected {
+    border-color: var(--color-primary, #6366f1);
+    background: var(--color-primary-soft, rgba(99, 102, 241, 0.10));
+    box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.25);
+}
+
+.vn-article-card.disabled {
+    opacity: 0.38;
+    cursor: not-allowed;
+}
+
+/* Checkmark badge */
+.vn-article-check {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--color-primary, #6366f1);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+    box-shadow: 0 0 8px rgba(99, 102, 241, 0.4);
+}
+
+/* Meta row */
+.vn-article-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+}
+
+.vn-article-source {
+    font-size: 0.68rem;
+    font-weight: 700;
+    color: var(--color-primary-light, #818cf8);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.vn-article-date {
+    font-size: 0.66rem;
+    color: var(--text-muted, #4a5f80);
+}
+
+.vn-article-title {
+    font-size: 0.87rem;
+    font-weight: 600;
+    color: var(--text-primary, #e8edf7);
+    margin: 0 0 6px;
+    line-height: 1.38;
+    padding-right: 16px;
+}
+
+.vn-article-desc {
+    font-size: 0.77rem;
+    color: var(--text-secondary, #8fa4c9);
+    line-height: 1.5;
+    margin: 0 0 10px;
+}
+
+.vn-article-footer {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+/* Badges */
+.vn-badge {
+    font-size: 0.62rem;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 20px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.vn-badge-new {
+    background: var(--color-primary-soft, rgba(99, 102, 241, 0.12));
+    color: var(--color-primary-light, #818cf8);
+}
+
+.vn-badge-selected {
+    background: rgba(99, 102, 241, 0.25);
+    color: #c7d2fe;
+}
+
+.vn-badge-fresh {
+    background: var(--color-success-soft, rgba(34, 197, 94, 0.12));
+    color: #86efac;
+}
+
+/* ── 5. Ranked rows (Step 2) ───────────────────────────────── */
+
+.vn-ranked-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.vn-ranked-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    background: var(--surface-card, #0e1629);
+    border: 1px solid var(--border-card, #1e2a42);
+    border-radius: 12px;
+    padding: 12px 14px;
+    transition: border-color 0.15s;
+}
+
+.vn-ranked-row:hover {
+    border-color: var(--border-card-hover, #2d3f5e);
+}
+
+.vn-rank-badge {
+    flex-shrink: 0;
+    width: 34px;
+    height: 34px;
+    border-radius: 8px;
+    background: var(--color-primary-soft, rgba(99, 102, 241, 0.15));
+    color: var(--color-primary-light, #818cf8);
+    font-size: 0.82rem;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(99, 102, 241, 0.2);
+}
+
+.vn-ranked-body {
+    flex: 1;
+    min-width: 0;
+}
+
+.vn-ranked-title {
+    font-size: 0.88rem;
+    font-weight: 600;
+    color: var(--text-primary, #e8edf7);
+    margin-bottom: 5px;
+    line-height: 1.3;
+}
+
+.vn-ranked-meta {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 5px;
+    flex-wrap: wrap;
+}
+
+.vn-tag {
+    font-size: 0.66rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 20px;
+    background: var(--color-primary-soft, rgba(99, 102, 241, 0.12));
+    color: var(--color-primary-light, #818cf8);
+    white-space: nowrap;
+}
+
+.vn-ranked-reason {
+    font-size: 0.75rem;
+    color: var(--text-muted, #4a5f80);
+    line-height: 1.4;
+}
+
+.vn-ranked-facts {
+    font-size: 0.75rem;
+    color: var(--text-secondary, #8fa4c9);
+    margin-bottom: 4px;
+    line-height: 1.5;
+}
+
+.vn-ranked-score {
+    font-size: 0.7rem;
+    color: var(--text-muted, #4a5f80);
+}
+
+.vn-ranked-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+.vn-ranked-controls button {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    border: 1px solid var(--border-card, #1e2a42);
+    background: var(--surface-page, #080c14);
+    color: var(--text-muted, #4a5f80);
+    cursor: pointer;
+    font-size: 0.88rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    padding: 0;
+}
+
+.vn-ranked-controls button:hover:not(:disabled) {
+    background: var(--surface-card-hover, #111e36);
+    border-color: var(--border-card-hover, #2d3f5e);
+    color: var(--text-primary, #e8edf7);
+}
+
+.vn-ranked-controls button:disabled {
+    opacity: 0.25;
+    cursor: not-allowed;
+}
+
+/* ── 6. Script review — scenes (Step 3) ────────────────────── */
+
+.vn-script-title {
+    font-size: 1rem;
+    font-style: italic;
+    color: var(--color-primary-light, #818cf8);
+    margin-top: 4px;
+    margin-bottom: 0;
+    line-height: 1.4;
+}
+
+.vn-scenes {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin: 14px 0;
+}
+
+.vn-scene-card {
+    background: var(--surface-card, #0e1629);
+    border: 1px solid var(--border-card, #1e2a42);
+    border-radius: 10px;
+    padding: 12px 14px;
+    transition: border-color 0.15s;
+}
+
+.vn-scene-card:hover {
+    border-color: var(--border-card-hover, #2d3f5e);
+}
+
+.vn-scene-card--hook {
+    border-left: 3px solid var(--color-primary, #6366f1);
+}
+
+.vn-scene-card--cta {
+    border-left: 3px solid var(--color-success, #22c55e);
+}
+
+.vn-scene-card--story {
+    border-left: 3px solid rgba(245, 158, 11, 0.6);
+}
+
+.vn-scene-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+}
+
+.vn-scene-num {
+    font-size: 0.68rem;
+    font-weight: 700;
+    color: var(--text-label, #3e5a8a);
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+}
+
+.vn-scene-company {
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: var(--color-warning, #f59e0b);
+    background: var(--color-warning-soft, rgba(245, 158, 11, 0.12));
+    padding: 2px 8px;
+    border-radius: 20px;
+}
+
+.vn-scene-dur {
+    font-size: 0.66rem;
+    color: var(--text-muted, #4a5f80);
+    margin-left: auto;
+}
+
+.vn-scene-text {
+    font-size: 0.85rem;
+    color: var(--text-secondary, #8fa4c9);
+    line-height: 1.58;
+    margin: 0 0 6px;
+}
+
+.vn-scene-visual {
+    font-size: 0.75rem;
+    color: var(--text-muted, #4a5f80);
+    margin-bottom: 4px;
+}
+
+.vn-scene-keywords {
+    font-size: 0.72rem;
+    color: var(--color-primary-light, #818cf8);
+    opacity: 0.85;
+}
+
+.vn-script-stats {
+    display: flex;
+    gap: 16px;
+    font-size: 0.78rem;
+    color: var(--text-muted, #4a5f80);
+    padding: 10px 0 4px;
+    border-top: 1px solid var(--border-card, #1e2a42);
+    margin-top: 6px;
+    flex-wrap: wrap;
+}
+
+.vn-script-accept {
+    padding: 12px 0 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+/* ── 7. Success card (Step 5) ──────────────────────────────── */
+
+.vn-success-card {
+    text-align: center;
+    padding: 36px 28px;
+    background: var(--color-success-soft, rgba(34, 197, 94, 0.08));
+    border: 1px solid rgba(34, 197, 94, 0.25);
+    border-radius: 16px;
+    margin-bottom: 24px;
+}
+
+.vn-success-icon {
+    font-size: 2.8rem;
+    margin-bottom: 14px;
+    display: block;
+}
+
+.vn-success-title {
+    font-size: 1.35rem;
+    font-weight: 700;
+    color: #86efac;
+    margin: 0 0 10px;
+}
+
+.vn-success-sub {
+    font-size: 0.88rem;
+    color: var(--text-secondary, #8fa4c9);
+    line-height: 1.6;
+    margin: 0 0 18px;
+}
+
+.vn-result-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: center;
+    font-size: 0.75rem;
+    color: var(--text-muted, #4a5f80);
+}
+
+.vn-result-meta span {
+    background: var(--surface-card, #0e1629);
+    padding: 3px 12px;
+    border-radius: 20px;
+    border: 1px solid var(--border-card, #1e2a42);
+}
+
+/* ── 8. Right panel — saved digests ────────────────────────── */
+
+.vn-saved-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 4px 0;
+}
+
+.vn-saved-item {
+    padding: 10px 13px;
+    border-radius: 10px;
+    background: var(--surface-page, #080c14);
+    border: 1px solid var(--border-card, #1e2a42);
+    cursor: default;
+    transition: border-color 0.15s;
+}
+
+.vn-saved-item:hover {
+    border-color: var(--border-card-hover, #2d3f5e);
+}
+
+.vn-saved-title {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text-primary, #e8edf7);
+    margin-bottom: 4px;
+    line-height: 1.3;
+}
+
+.vn-saved-meta {
+    font-size: 0.72rem;
+    color: var(--text-muted, #4a5f80);
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+/* ── 9. Layout overrides for DailyDigest ───────────────────── */
+
+.vn-header {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    justify-content: flex-start !important;
+    margin-bottom: 0.25rem;
+    gap: 0.25rem;
+}
+
+.vn-title {
+    font-size: 1.5rem;
+    font-weight: 800;
+    color: var(--text-heading, #f0f4fc);
+    margin: 0;
+    letter-spacing: -0.025em;
+}
+
+.vn-subtitle {
+    font-size: 0.82rem;
+    color: var(--text-muted, #4a5f80);
+    margin: 0;
+    line-height: 1.4;
+}
+
+.vn-section-hint {
+    font-size: 0.78rem;
+    color: var(--text-muted, #4a5f80);
+    margin: 0;
+    line-height: 1.4;
+}
+
+/* ── 10. Selection progress bar ─────────────────────────────── */
+
+.vn-sel-progress {
+    margin: 8px 0 12px;
+}
+
+.vn-sel-progress-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+}
+
+.vn-sel-label {
+    font-size: 0.8rem;
+    font-weight: 500;
+    transition: color 0.2s;
+}
+
+.vn-sel-label--empty {
+    color: var(--text-muted, #4a5f80);
+}
+
+.vn-sel-label--below {
+    color: var(--color-warning, #f59e0b);
+}
+
+.vn-sel-label--valid {
+    color: var(--color-success, #22c55e);
+    font-weight: 600;
+}
+
+.vn-sel-segments {
+    display: flex;
+    gap: 3px;
+    align-items: center;
+}
+
+.vn-sel-seg {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    background: var(--navy-700, #152040);
+    border: 1px solid var(--border-card, #1e2a42);
+    transition: background 0.2s, border-color 0.2s;
+}
+
+.vn-sel-seg.amber {
+    background: rgba(245, 158, 11, 0.6);
+    border-color: var(--color-warning, #f59e0b);
+}
+
+.vn-sel-seg.green {
+    background: rgba(34, 197, 94, 0.6);
+    border-color: var(--color-success, #22c55e);
+}
+
+.vn-sel-bar {
+    height: 3px;
+    background: var(--navy-700, #152040);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.vn-sel-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.3s ease, background 0.3s ease;
+}
+
+.vn-sel-fill--empty {
+    background: transparent;
+}
+
+.vn-sel-fill--below {
+    background: linear-gradient(90deg, var(--color-warning, #f59e0b), #d97706);
+}
+
+.vn-sel-fill--valid {
+    background: linear-gradient(90deg, var(--color-success, #22c55e), #16a34a);
+}
+
+/* ── 11. Article card helpers ───────────────────────────────── */
+
+.vn-article-source--hidden {
+    display: none;
+}
+
+.vn-article-desc--empty {
+    color: var(--text-muted, #4a5f80);
+    font-style: italic;
+    font-size: 0.77rem;
+    margin: 0 0 10px;
+    line-height: 1.45;
+}
+
+/* ── 12. Step 2 cut divider ─────────────────────────────────── */
+
+.vn-ranked-row--cut {
+    opacity: 0.4;
+    transition: opacity 0.2s;
+}
+
+.vn-ranked-row--cut:hover {
+    opacity: 0.65;
+}
+
+.vn-rank-cutoff {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 4px 0;
+}
+
+.vn-rank-cutoff::before,
+.vn-rank-cutoff::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: rgba(245, 158, 11, 0.3);
+}
+
+.vn-rank-cutoff-label {
+    font-size: 0.63rem;
+    font-weight: 600;
+    color: var(--color-warning, #f59e0b);
+    white-space: nowrap;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    opacity: 0.85;
+}
+
+/* ── 13a. Script overview banner ───────────────────────────── */
+
+.vn-script-banner {
+    background: var(--color-primary-soft, rgba(99, 102, 241, 0.08));
+    border: 1px solid rgba(99, 102, 241, 0.2);
+    border-radius: 12px;
+    padding: 12px 16px;
+    margin-bottom: 14px;
+}
+
+.vn-script-banner-title {
+    font-size: 1rem;
+    font-weight: 700;
+    color: #c7d2fe;
+    margin-bottom: 6px;
+    line-height: 1.3;
+    font-style: italic;
+}
+
+.vn-script-banner-stats {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.78rem;
+    color: var(--text-muted, #4a5f80);
+}
+
+.vn-script-banner-dot {
+    color: var(--border-card, #1e2a42);
+}
+
+/* ── 13b. Sticky approve bar (Step 3) ───────────────────────── */
+
+.vn-sticky-accept {
+    position: sticky;
+    bottom: 0;
+    background: rgba(8, 12, 20, 0.92);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border-top: 1px solid var(--border-card, #1e2a42);
+    padding: 10px 0;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    z-index: 10;
+    margin-top: 12px;
+}
+
+.vn-sticky-accept.accepted {
+    border-top-color: rgba(34, 197, 94, 0.3);
+}
+
+.vn-sticky-accept .vn-accept-btn {
+    flex: 1;
+}
+
+/* ── 13c. Script accept button ──────────────────────────────── */
+
+.vn-accept-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    padding: 0.65rem 1.4rem;
+    border-radius: 10px;
+    border: 2px solid rgba(99, 102, 241, 0.3);
+    background: var(--color-primary-soft, rgba(99, 102, 241, 0.08));
+    color: var(--color-primary-light, #818cf8);
+    font-size: 0.88rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s, color 0.2s, box-shadow 0.2s;
+}
+
+.vn-accept-btn:hover {
+    border-color: rgba(99, 102, 241, 0.6);
+    background: rgba(99, 102, 241, 0.14);
+    color: #c7d2fe;
+}
+
+.vn-accept-btn.accepted {
+    border-color: var(--color-success, #22c55e);
+    background: var(--color-success-soft, rgba(34, 197, 94, 0.1));
+    color: #86efac;
+}
+
+.vn-accept-btn.accepted:hover {
+    background: rgba(34, 197, 94, 0.16);
+}
+
+.vn-accept-check-icon {
+    font-size: 1rem;
+    font-weight: 800;
+    line-height: 1;
+}
+
+.vn-accept-hint {
+    font-size: 0.72rem;
+    color: var(--text-muted, #4a5f80);
+    margin: 4px 0 0;
+    text-align: center;
+}
+
+/* ── 14. Right panel dynamic content ────────────────────────── */
+
+.vn-panel-preview {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.vn-panel-digest-title {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--color-primary-light, #818cf8);
+    line-height: 1.35;
+    margin-bottom: 8px;
+    border-left: 3px solid var(--color-primary, #6366f1);
+    padding-left: 8px;
+}
+
+.vn-panel-stat-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 8px;
+    border-radius: 6px;
+    background: var(--surface-page, #080c14);
+    border: 1px solid rgba(30, 42, 66, 0.5);
+}
+
+.vn-panel-stat-label {
+    font-size: 0.7rem;
+    color: var(--text-muted, #4a5f80);
+}
+
+.vn-panel-stat-val {
+    font-size: 0.76rem;
+    font-weight: 600;
+    color: var(--text-primary, #e8edf7);
+}
+
+.vn-panel-stat-val--green {
+    color: #86efac;
+}
+
+.vn-panel-stat-val--muted {
+    color: var(--text-muted, #4a5f80);
+}
+
+.vn-panel-hint {
+    font-size: 0.7rem;
+    color: var(--text-muted, #4a5f80);
+    line-height: 1.4;
+    margin-top: 6px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    background: var(--surface-page, #080c14);
+    border: 1px solid var(--border-card, #1e2a42);
+}
+
+.vn-panel-hint--title {
+    font-style: italic;
+    color: var(--color-primary-light, #818cf8);
+    background: var(--color-primary-soft, rgba(99, 102, 241, 0.07));
+    border-color: rgba(99, 102, 241, 0.18);
+}
+
+.vn-panel-accepted {
+    margin-top: 8px;
+    padding: 5px 10px;
+    background: var(--color-success-soft, rgba(34, 197, 94, 0.1));
+    border: 1px solid rgba(34, 197, 94, 0.25);
+    border-radius: 6px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: #86efac;
+    text-align: center;
+}

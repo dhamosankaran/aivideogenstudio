@@ -11,7 +11,24 @@ import {
 } from '../services/viralNewsApi';
 import './ViralNews.css';
 
-const CATEGORIES = ['All', 'Technology', 'Business', 'Politics', 'Science', 'Health', 'Entertainment', 'Elon Musk', 'Humanoid'];
+const CATEGORIES = ['All', '🌍 World', '🇨🇳 China', 'Technology', 'Business', 'Politics', 'Science', 'Health', 'Entertainment', 'Elon Musk', 'Humanoid'];
+
+// Convert a display category label (may include emoji) to a backend-safe slug.
+// e.g. '🌍 World' → 'world', 'Elon Musk' → 'elon_musk'
+const toCategorySlug = (label) =>
+    label
+        .split('')
+        .filter(c => c.codePointAt(0) < 128)   // strip emoji / non-ASCII
+        .join('')
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, '_');
+
+const VIDEO_DURATIONS = [
+    { id: '60s', label: '60 Seconds', desc: 'Short · Reels / TikTok', badge: null },
+    { id: '120s', label: '2 Minutes', desc: 'YouTube Shorts · full story', badge: 'Recommended' },
+    { id: '300s', label: '5 Minutes', desc: 'Regular video · deep dive', badge: null },
+];
 
 const BACKGROUND_MODES = [
     { id: 'auto', label: '✨ Auto Mix', desc: 'Smart mix: videos → images → gradient fallback', badge: 'Recommended' },
@@ -69,6 +86,7 @@ function ViralNews() {
     const [backgroundMode, setBackgroundMode] = useState('auto');
     const [imageSource, setImageSource] = useState('stock');
     const [videoSource, setVideoSource] = useState('stock');
+    const [videoDuration, setVideoDuration] = useState('120s');
 
     // ── Video generation ───────────────────────────────────────
     const [isGeneratingVideo, setIsGeneratingVideo] = useState(false);
@@ -97,7 +115,7 @@ function ViralNews() {
         setIsLoadingTrending(true);
         setError(null);
         try {
-            const cat = category === 'All' ? null : category.toLowerCase().replace(/\s+/g, '_');
+            const cat = category === 'All' ? null : toCategorySlug(category);
             const data = await discoverTrending(cat, query || null, 15);
             setTrending(data.articles || []);
         } catch (e) {
@@ -204,7 +222,7 @@ function ViralNews() {
         setScriptAccepted(false);
 
         try {
-            const result = await generateViralNewsScript(savedSource.id, selectedAngle);
+            const result = await generateViralNewsScript(savedSource.id, selectedAngle, null, videoDuration);
             setScriptPreview(result);
             setShowScriptView(true);
             setSuccess('Script ready for review!');
@@ -233,6 +251,7 @@ function ViralNews() {
                 backgroundMode,
                 imageSource,
                 videoSource,
+                videoDuration,
             );
             setGenerationStep('Video rendering in background...');
             setSuccess(`🎬 ${result.message}`);
@@ -378,6 +397,22 @@ function ViralNews() {
                     <div className="vn-video-options">
                         <div className="vn-vo-title">Video Options</div>
 
+                        {/* Video Duration */}
+                        <label className="vn-vo-label">Video Duration</label>
+                        <div className="vn-tts-grid vn-duration-grid">
+                            {VIDEO_DURATIONS.map(d => (
+                                <label key={d.id} className={`vn-tts-card ${videoDuration === d.id ? 'selected' : ''}`}>
+                                    <input type="radio" name="duration" value={d.id} checked={videoDuration === d.id} onChange={() => setVideoDuration(d.id)} />
+                                    <div className="vn-tts-text">
+                                        <span className="vn-tts-name">{d.label}</span>
+                                        <span className="vn-tts-cost">{d.desc}</span>
+                                    </div>
+                                    {d.badge && <span className="vn-tts-rec">{d.badge}</span>}
+                                </label>
+                            ))}
+                        </div>
+                        <div className="vn-duration-hint">Changing duration requires regenerating the script</div>
+
                         {/* TTS Provider */}
                         <label className="vn-vo-label">TTS Provider</label>
                         <div className="vn-tts-grid">
@@ -388,8 +423,10 @@ function ViralNews() {
                             ]).map(p => (
                                 <label key={p.id} className={`vn-tts-card ${selectedProvider === p.id ? 'selected' : ''}`}>
                                     <input type="radio" name="tts" value={p.id} checked={selectedProvider === p.id} onChange={() => setSelectedProvider(p.id)} />
-                                    <span className="vn-tts-name">{p.name}</span>
-                                    <span className="vn-tts-cost">{p.cost_label}</span>
+                                    <div className="vn-tts-text">
+                                        <span className="vn-tts-name">{p.name}</span>
+                                        <span className="vn-tts-cost">{p.cost_label}</span>
+                                    </div>
                                     {(voiceOptions?.default_provider || 'openai') === p.id && <span className="vn-tts-rec">✨</span>}
                                 </label>
                             ))}
@@ -423,8 +460,10 @@ function ViralNews() {
                             {BACKGROUND_MODES.map(m => (
                                 <label key={m.id} className={`vn-tts-card ${backgroundMode === m.id ? 'selected' : ''}`}>
                                     <input type="radio" name="bg" value={m.id} checked={backgroundMode === m.id} onChange={() => setBackgroundMode(m.id)} />
-                                    <span className="vn-tts-name">{m.label}</span>
-                                    <span className="vn-tts-cost">{m.desc}</span>
+                                    <div className="vn-tts-text">
+                                        <span className="vn-tts-name">{m.label}</span>
+                                        <span className="vn-tts-cost">{m.desc}</span>
+                                    </div>
                                     {m.badge && <span className="vn-tts-rec">{m.badge}</span>}
                                 </label>
                             ))}
@@ -436,8 +475,10 @@ function ViralNews() {
                             {IMAGE_SOURCES.map(s => (
                                 <label key={s.id} className={`vn-tts-card ${imageSource === s.id ? 'selected' : ''}`}>
                                     <input type="radio" name="img-src" value={s.id} checked={imageSource === s.id} onChange={() => setImageSource(s.id)} />
-                                    <span className="vn-tts-name">{s.label}</span>
-                                    <span className="vn-tts-cost">{s.desc}</span>
+                                    <div className="vn-tts-text">
+                                        <span className="vn-tts-name">{s.label}</span>
+                                        <span className="vn-tts-cost">{s.desc}</span>
+                                    </div>
                                     {s.id === 'ai_generated' && <span className="vn-tts-rec">Beta</span>}
                                 </label>
                             ))}
@@ -449,8 +490,10 @@ function ViralNews() {
                             {VIDEO_SOURCES.map(s => (
                                 <label key={s.id} className={`vn-tts-card ${videoSource === s.id ? 'selected' : ''}`}>
                                     <input type="radio" name="vid-src" value={s.id} checked={videoSource === s.id} onChange={() => setVideoSource(s.id)} />
-                                    <span className="vn-tts-name">{s.label}</span>
-                                    <span className="vn-tts-cost">{s.desc}</span>
+                                    <div className="vn-tts-text">
+                                        <span className="vn-tts-name">{s.label}</span>
+                                        <span className="vn-tts-cost">{s.desc}</span>
+                                    </div>
                                     {s.id === 'veo' && <span className="vn-tts-rec">Beta</span>}
                                 </label>
                             ))}
@@ -652,6 +695,25 @@ function ViralNews() {
                                         </>
                                     )}
 
+                                    {/* Duration selector — shown when analysis is complete */}
+                                    {analysisReady && (
+                                        <div className="vn-duration-selector">
+                                            <div className="vn-duration-label">Video Duration</div>
+                                            <div className="vn-duration-pills">
+                                                {VIDEO_DURATIONS.map(d => (
+                                                    <button
+                                                        key={d.id}
+                                                        className={`vn-duration-pill ${videoDuration === d.id ? 'selected' : ''}`}
+                                                        onClick={() => setVideoDuration(d.id)}
+                                                    >
+                                                        {d.label}
+                                                        {d.badge && <span className="vn-duration-badge">{d.badge}</span>}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
+
                                     {/* Analysis complete */}
                                     {analysisReady && (
                                         <>
@@ -664,7 +726,7 @@ function ViralNews() {
                                                 setError(null);
                                                 setGenerationStep('Generating audio...');
                                                 try {
-                                                    const result = await generateViralNewsVideo(savedSource.id, selectedAngle, null, null, selectedProvider, selectedVoice, backgroundMode, imageSource, videoSource);
+                                                    const result = await generateViralNewsVideo(savedSource.id, selectedAngle, null, null, selectedProvider, selectedVoice, backgroundMode, imageSource, videoSource, videoDuration);
                                                     setSuccess(`🎬 ${result.message}`);
                                                     setTimeout(() => navigateTo('videos'), 2500);
                                                 } catch (e) {

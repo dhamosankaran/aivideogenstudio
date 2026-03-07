@@ -18,6 +18,8 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+from app.services.gemini_image_service import _prompt_refiner
+
 
 class VeoVideoService:
     """
@@ -81,10 +83,9 @@ class VeoVideoService:
 
         aspect_ratio = aspect_ratio or self.DEFAULT_ASPECT_RATIO
         duration_seconds = duration_seconds or self.DEFAULT_DURATION
-        resolution = resolution or self.DEFAULT_RESOLUTION
 
         logger.info(
-            f"[Veo] Generating video ({aspect_ratio}, {resolution}, {duration_seconds}s)"
+            f"[Veo] Generating video ({aspect_ratio}, {duration_seconds}s)"
         )
         logger.debug(f"[Veo] Prompt: {prompt[:200]}...")
 
@@ -95,7 +96,6 @@ class VeoVideoService:
                 output_path,
                 aspect_ratio,
                 duration_seconds,
-                resolution,
             )
             return result
         except Exception as e:
@@ -108,7 +108,6 @@ class VeoVideoService:
         output_path: Path,
         aspect_ratio: str,
         duration_seconds: int,
-        resolution: str,
     ) -> Optional[Path]:
         """Synchronous video generation with polling (called via asyncio.to_thread)."""
         from google.genai import types
@@ -119,9 +118,7 @@ class VeoVideoService:
             prompt=prompt,
             config=types.GenerateVideosConfig(
                 aspect_ratio=aspect_ratio,
-                resolution=resolution,
                 duration_seconds=str(duration_seconds),
-                person_generation="allow_adult",
             ),
         )
 
@@ -138,7 +135,11 @@ class VeoVideoService:
 
         # Download the generated video
         try:
-            generated_video = operation.response.generated_videos[0]
+            videos = getattr(operation.response, "generated_videos", None) or []
+            if not videos:
+                logger.warning("[Veo] Operation completed but returned no videos (prompt may have been rejected)")
+                return None
+            generated_video = videos[0]
             output_path.parent.mkdir(parents=True, exist_ok=True)
 
             self._client.files.download(file=generated_video.video)
@@ -154,11 +155,62 @@ class VeoVideoService:
             logger.error(f"[Veo] Failed to download/save video: {e}")
             return None
 
+    # ── Genre → Veo Style Mapping ─────────────────────────────────────
+
+    # Book subjects (from Open Library) that map well to whiteboard/illustration style.
+    # Everything else defaults to cinematic.
+    WHITEBOARD_GENRES = frozenset({
+        "self-help", "personal development", "productivity", "habits",
+        "business", "leadership", "management", "entrepreneurship",
+        "psychology", "motivation", "success", "career", "finance",
+        "personal finance", "self improvement", "mindset",
+    })
+
+    @classmethod
+    def default_veo_style_for_book(cls, subjects: list) -> str:
+        """
+        Infer the best Veo style from book subjects.
+
+        Returns 'whiteboard' for self-help/business genres, 'cinematic' otherwise.
+        Uses rule-based mapping — fast, free, deterministic.
+        """
+        if not subjects:
+            return "cinematic"
+        subject_lower = {s.lower() for s in subjects}
+        if subject_lower & cls.WHITEBOARD_GENRES:
+            return "whiteboard"
+        return "cinematic"
+
+    # Scene beat → Veo style routing for "auto" mode.
+    # Scene 3 (relatable story) → whiteboard (emotional, organic feel)
+    # Scene 4 (famous example) → illustration (polished, authoritative)
+    # Scene 6 (cheat code reveal) → illustration (diagram/framework reveal)
+    _AUTO_SCENE_STYLE: dict = {
+        3: "whiteboard",    # Relatable story — hand-drawn metaphor
+        4: "illustration",  # Famous example — polished flat diagram
+        6: "illustration",  # Cheat code — framework/system reveal
+    }
+
+    @classmethod
+    def resolve_scene_style(cls, veo_style: str, scene_number: int) -> str:
+        """
+        Resolve the effective Veo style for a specific scene.
+
+        Args:
+            veo_style: 'cinematic' | 'whiteboard' | 'illustration' | 'auto'
+            scene_number: 1-indexed scene number
+
+        Returns one of: 'cinematic', 'whiteboard', 'illustration'
+        """
+        if veo_style == "auto":
+            return cls._AUTO_SCENE_STYLE.get(scene_number, "cinematic")
+        return veo_style if veo_style in ("cinematic", "whiteboard", "illustration") else "cinematic"
+
     # ── Cinematic Prompt Builder ─────────────────────────────────────
 
     CINEMATIC_SUFFIX = (
-        "Cinematic quality, shallow depth of field, professional color grading, "
-        "smooth camera movement, 24fps film look"
+        "dynamic camera movement, cinematic tracking shot, highly engaging, "
+        "fast-paced energy, adrenaline-pumping visuals, 24fps film look"
     )
 
     def build_scene_prompt(
@@ -176,17 +228,33 @@ class VeoVideoService:
 
         Returns a rich prompt optimized for Veo 3.1 video output.
         """
-        # Determine scene role for camera/mood guidance
-        if scene_number == 1:
-            camera_hint = "Opening hook — dramatic reveal, slow zoom in"
+        # Determine scene role for camera/mood guidance.
+        # For book reviews with 8 scenes, use beat-specific camera instructions
+        # (Veo only fires on scenes 3, 4, 6 — Relatable Story, Famous Example, Cheat Code).
+        # NOTE: All hints are person-free — Veo silently returns empty results
+        # when prompts feature people unless account-level person_generation is approved.
+        BOOK_REVIEW_CAMERA_MAP = {
+            1: "Opening hook — dramatic slow zoom revealing an object or environment, counterintuitive reveal energy",
+            2: "Paradox reveal — push-in on symbolic subject, tense high-contrast lighting, no people",
+            3: "Relatable story — metaphor in organic motion, fluid camera through an environment",
+            4: "Famous example — cinematic environment or iconic object, warm amber tracking shot, no people",
+            5: "Hidden truth — light breaking through darkness, revelation moment, abstract or nature scene",
+            6: "Cheat code reveal — invisible becomes visible, dramatic contrast, abstract visual metaphor",
+            7: "Identity mirror — slow introspective pull-back, moody blue tones, empty reflective space",
+            8: "CTA close — warm inviting push toward an object or landscape, aspirational energy",
+        }
+        if content_type == "book_review" and scene_number in BOOK_REVIEW_CAMERA_MAP:
+            camera_hint = BOOK_REVIEW_CAMERA_MAP[scene_number]
+        elif scene_number == 1:
+            camera_hint = "Opening hook — dramatic reveal of an object or environment, slow zoom in, no people"
         elif scene_number == total_scenes:
-            camera_hint = "Closing scene — warm pullback, uplifting mood"
+            camera_hint = "Closing scene — warm pullback over landscape or environment, uplifting mood, no people"
         elif scene_number <= total_scenes // 3:
-            camera_hint = "Early scene — establishing shot, building intrigue"
+            camera_hint = "Early scene — establishing shot of environment, building intrigue, no people"
         elif scene_number <= 2 * total_scenes // 3:
-            camera_hint = "Mid scene — close-up, intense focus, key insight"
+            camera_hint = "Mid scene — close-up on object or texture, intense focus, key insight, no people"
         else:
-            camera_hint = "Late scene — tracking shot, reflective mood"
+            camera_hint = "Late scene — tracking shot through environment, reflective mood, no people"
 
         parts = [
             "Create a cinematic 8-second video clip for a YouTube Shorts background.",
@@ -202,7 +270,8 @@ class VeoVideoService:
         ])
 
         if visual_cues:
-            parts.append(f"VISUAL DIRECTION: {visual_cues}")
+            refined_cues = _prompt_refiner.refine(visual_cues)
+            parts.append(f"VISUAL DIRECTION: {refined_cues}")
 
         if scene_text:
             context = scene_text[:200].rsplit(" ", 1)[0] if len(scene_text) > 200 else scene_text
@@ -213,7 +282,8 @@ class VeoVideoService:
             "STYLE REQUIREMENTS:",
             "- Vertical composition (9:16 aspect ratio)",
             "- No text, watermarks, or UI overlays",
-            "- Smooth, slow camera movement",
+            "- NO people, faces, or human figures",
+            "- Dynamic, energetic camera movement — push-ins, tracking shots, quick reveals",
             "- Rich color palette with cinematic lighting",
             "- Evoke emotion — this plays behind narration",
             "- NO dialogue or speech in audio",
@@ -221,3 +291,132 @@ class VeoVideoService:
 
         base_prompt = "\n".join(parts)
         return f"{base_prompt}\n\n{self.CINEMATIC_SUFFIX}"
+
+    # ── Whiteboard Prompt Builder ─────────────────────────────────────
+
+    # Scene beat → what the hand draws for book review scenes
+    WHITEBOARD_SCENE_SUBJECTS = {
+        1: "a closed book that slowly opens to reveal glowing pages",
+        2: "a question mark that transforms into a lightbulb",
+        3: "two contrasting paths — one rocky and winding, one straight and clear",
+        4: "a rising staircase with a star at the top",
+        5: "gears turning inside a brain outline",
+        6: "a lock opening to reveal a hidden key beneath it",
+        7: "an arrow breaking through a wall",
+        8: "an upward arrow with stars and sparkles bursting around it",
+    }
+
+    def build_whiteboard_prompt(
+        self,
+        scene_number: int = 1,
+        total_scenes: int = 8,
+        visual_cues: str = "",
+        book_title: str = "",
+    ) -> str:
+        """
+        Build a whiteboard animation prompt for a scene.
+
+        Generates a hand-drawing-on-white-canvas style clip.
+        Best for storytelling and emotional scenes (Scene 3 — Relatable Story).
+        """
+        subject = self.WHITEBOARD_SCENE_SUBJECTS.get(scene_number, "an upward arrow with stars")
+
+        # Incorporate visual cues if available
+        if visual_cues:
+            refined = _prompt_refiner.refine(visual_cues)
+            subject = f"{subject}, incorporating: {refined[:100]}"
+
+        return (
+            f"Whiteboard animation style video. A hand holding a black marker draws on a clean pure white background. "
+            f"The hand sketches {subject}, stroke by stroke. "
+            f"Simple black outlines appear first, then bold color fills are added. "
+            f"Fast drawing motion with satisfying reveal. "
+            f"Vertical 9:16 composition. No real photography, illustrated style only. "
+            f"No text overlays, no watermarks, no people."
+        )
+
+    # ── Flat Illustration Prompt Builder ─────────────────────────────
+
+    ILLUSTRATION_SCENE_SUBJECTS = {
+        1: "an open book with light rays emanating from its pages",
+        2: "a split diagram: left side shows chaos, right side shows clarity and order",
+        3: "a Venn diagram of two overlapping circles labeled with contrasting ideas",
+        4: "a polished infographic showing an upward growth chart with milestone markers",
+        5: "a flowchart with decision nodes leading to a bright outcome",
+        6: "a 3-step framework diagram with icons and connecting arrows",
+        7: "a before/after comparison panel with contrasting visuals",
+        8: "a trophy or star with radiating lines, celebration motif",
+    }
+
+    def build_illustration_prompt(
+        self,
+        scene_number: int = 1,
+        total_scenes: int = 8,
+        visual_cues: str = "",
+        book_title: str = "",
+    ) -> str:
+        """
+        Build a 2D flat illustration / diagram animation prompt for a scene.
+
+        Generates polished motion-graphics style clips.
+        Best for framework/concept scenes (Scene 4 — Famous Example, Scene 6 — Cheat Code).
+        """
+        subject = self.ILLUSTRATION_SCENE_SUBJECTS.get(scene_number, "a polished upward-trending diagram")
+
+        if visual_cues:
+            refined = _prompt_refiner.refine(visual_cues)
+            subject = f"{subject}, theme: {refined[:100]}"
+
+        return (
+            f"2D flat illustration animation on a clean white background. "
+            f"Smooth motion graphics showing {subject}. "
+            f"Clean vector art style, bold outlines, vibrant colors. "
+            f"Each element appears with a draw-on animation effect. "
+            f"Educational explainer video aesthetic. "
+            f"Vertical 9:16 composition. No people, no photography, no text overlays, no watermarks."
+        )
+
+    # ── Unified Prompt Dispatcher ─────────────────────────────────────
+
+    def build_prompt(
+        self,
+        veo_style: str,
+        scene_number: int,
+        scene_text: str = "",
+        visual_cues: str = "",
+        book_title: str = "",
+        book_author: str = "",
+        total_scenes: int = 8,
+        content_type: str = "book_review",
+    ) -> str:
+        """
+        Build the right Veo prompt based on style.
+
+        Args:
+            veo_style: 'cinematic' | 'whiteboard' | 'illustration'
+                       (should be pre-resolved via resolve_scene_style)
+        """
+        if veo_style == "whiteboard":
+            return self.build_whiteboard_prompt(
+                scene_number=scene_number,
+                total_scenes=total_scenes,
+                visual_cues=visual_cues,
+                book_title=book_title,
+            )
+        elif veo_style == "illustration":
+            return self.build_illustration_prompt(
+                scene_number=scene_number,
+                total_scenes=total_scenes,
+                visual_cues=visual_cues,
+                book_title=book_title,
+            )
+        else:
+            return self.build_scene_prompt(
+                scene_text=scene_text,
+                visual_cues=visual_cues,
+                book_title=book_title,
+                book_author=book_author,
+                scene_number=scene_number,
+                total_scenes=total_scenes,
+                content_type=content_type,
+            )

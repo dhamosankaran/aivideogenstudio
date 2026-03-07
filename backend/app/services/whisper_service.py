@@ -144,62 +144,97 @@ class WhisperService:
         scenes: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
         """
-        Get timing for each scene in a scene-based script.
-        
+        Get timing for each scene by proportionally allocating Whisper words
+        based on each scene's word count relative to the full script.
+
+        Why proportional instead of equal-division:
+          Daily Digest scenes have very different lengths — the hook is ~12 words
+          but a story beat is ~30 words. Equal division would cut mid-sentence,
+          causing images to change too early or late relative to the narration.
+
         Args:
             audio_path: Path to audio file
             scenes: List of scene dictionaries with 'text' field
-            
+
         Returns:
-            Scenes with added timing information
+            Scenes with added start_time, end_time, duration, and words fields
         """
         timing_data = self.transcribe_audio(audio_path)
         all_words = timing_data["words"]
-        
-        # Simple approach: divide words evenly across scenes
-        # TODO: Could use fuzzy matching to find exact scene boundaries
+
         total_words = len(all_words)
         total_scenes = len(scenes)
-        
-        if total_scenes == 0:
+
+        if total_scenes == 0 or total_words == 0:
             return scenes
-        
-        words_per_scene = total_words // total_scenes
-        
+
+        # ── Proportional allocation ──────────────────────────────────────────
+        # Count words in each scene's script text to use as allocation weights.
+        # Falls back to equal division if any scene has no text.
+        scene_word_counts = []
+        for scene in scenes:
+            text = scene.get("text", "") or ""
+            wc = len(text.split())
+            scene_word_counts.append(max(wc, 1))  # min 1 to avoid zero-weight
+
+        total_script_words = sum(scene_word_counts)
+
+        # Convert counts to number of Whisper words to assign per scene
+        whisper_allocations = []
+        allocated = 0
+        for i, wc in enumerate(scene_word_counts):
+            if i == total_scenes - 1:
+                # Last scene gets all remaining words (avoids rounding gaps)
+                whisper_allocations.append(total_words - allocated)
+            else:
+                share = round(total_words * wc / total_script_words)
+                share = max(share, 1)
+                # Don't exceed remaining budget
+                share = min(share, total_words - allocated - (total_scenes - i - 1))
+                whisper_allocations.append(share)
+                allocated += share
+
+        logger.info(
+            f"[SceneTiming] Proportional allocation — {total_scenes} scenes, "
+            f"{total_words} Whisper words → {whisper_allocations}"
+        )
+
+        # ── Assign words → timing ────────────────────────────────────────────
         enhanced_scenes = []
         word_index = 0
-        
+
         for i, scene in enumerate(scenes):
-            # Calculate word range for this scene
             start_idx = word_index
-            if i == total_scenes - 1:
-                # Last scene gets remaining words
-                end_idx = total_words
-            else:
-                end_idx = start_idx + words_per_scene
-            
+            end_idx   = word_index + whisper_allocations[i]
+            end_idx   = min(end_idx, total_words)
+
             scene_words = all_words[start_idx:end_idx]
-            
+
             if scene_words:
-                scene_start = scene_words[0]["start"]
-                scene_end = scene_words[-1]["end"]
+                scene_start    = scene_words[0]["start"]
+                scene_end      = scene_words[-1]["end"]
                 scene_duration = scene_end - scene_start
             else:
-                scene_start = 0
-                scene_end = 0
-                scene_duration = 0
-            
-            enhanced_scene = {
+                scene_start    = all_words[start_idx - 1]["end"] if start_idx > 0 else 0.0
+                scene_end      = scene_start
+                scene_duration = 0.0
+
+            enhanced_scenes.append({
                 **scene,
                 "start_time": scene_start,
-                "end_time": scene_end,
-                "duration": scene_duration,
-                "words": scene_words
-            }
-            
-            enhanced_scenes.append(enhanced_scene)
+                "end_time":   scene_end,
+                "duration":   scene_duration,
+                "words":      scene_words,
+            })
+
+            logger.debug(
+                f"[SceneTiming] Scene {i+1}: words[{start_idx}:{end_idx}] "
+                f"({len(scene_words)} words) → {scene_start:.2f}s–{scene_end:.2f}s "
+                f"(script_wc={scene_word_counts[i]})"
+            )
+
             word_index = end_idx
-        
+
         return enhanced_scenes
 
 

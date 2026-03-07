@@ -66,6 +66,7 @@
 | #027 | Advanced AI Features | 📋 Planned | 3-4 weeks |
 | #028 | Creative AI Tools | 📋 Planned | 3-4 weeks |
 | #029 | AI Intelligence Layer | 📋 Planned | 2-3 weeks |
+| [#030](./ISSUE-2026-03-01-030-whiteboard-animation-veo-style.md) | Whiteboard Animation Veo Style (Book Reviews) | 📋 Idea | 1-2 weeks |
 
 ---
 
