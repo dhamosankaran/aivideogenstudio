@@ -241,6 +241,201 @@ class VideoEditorService:
             logger.warning(f"Music overlay error: {e}")
             return video_path
 
+    # ── Overlay TTS Audio ───────────────────────────────────────────
+
+    def overlay_tts_audio(
+        self,
+        video_path: Path,
+        tts_path: Path,
+        volume: float = 1.0,
+        ducking_volume: float = 0.1,
+        output_path: Optional[Path] = None,
+    ) -> Path:
+        """
+        Add TTS audio to a video, replacing or ducking original audio.
+        """
+        video_path = Path(video_path)
+        tts_path = Path(tts_path)
+
+        if not video_path.exists():
+            raise FileNotFoundError(f"Video not found: {video_path}")
+        if not tts_path.exists():
+            raise FileNotFoundError(f"TTS audio not found: {tts_path}")
+
+        if output_path is None:
+            output_path = self.output_dir / f"{video_path.stem}_tts.mp4"
+
+        has_audio = self._has_audio_stream(video_path)
+
+        if has_audio:
+            # Duck original audio, keep TTS at full volume
+            filter_complex = (
+                f"[0:a]volume={ducking_volume}[bgg];"
+                f"[1:a]volume={volume}[tts];"
+                f"[bgg][tts]amix=inputs=2:duration=first:dropout_transition=3[aout]"
+            )
+            cmd = [
+                "ffmpeg",
+                "-i", str(video_path),
+                "-i", str(tts_path),
+                "-filter_complex", filter_complex,
+                "-map", "0:v",
+                "-map", "[aout]",
+                "-c:v", "copy",
+                "-c:a", "aac",
+                "-shortest",
+                "-y",
+                "-loglevel", "error",
+                str(output_path),
+            ]
+        else:
+            cmd = [
+                "ffmpeg",
+                "-i", str(video_path),
+                "-i", str(tts_path),
+                "-map", "0:v",
+                "-map", "1:a",
+                "-c:v", "copy",
+                "-c:a", "aac",
+                "-filter:a", f"volume={volume}",
+                "-shortest",
+                "-y",
+                "-loglevel", "error",
+                str(output_path),
+            ]
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if result.returncode != 0:
+                logger.warning(f"TTS overlay failed: {result.stderr[:300]}")
+                return video_path
+
+            logger.info(f"TTS overlaid: {output_path}")
+            return output_path
+
+        except Exception as e:
+            logger.warning(f"TTS overlay error: {e}")
+            return video_path
+
+    # ── Text Overlay ────────────────────────────────────────────
+
+    def add_text_overlay(
+        self,
+        video_path: Path,
+        text: str,
+        output_path: Optional[Path] = None,
+    ) -> Path:
+        """
+        Burn a text overlay onto the video.
+        Used for publisher credits or watermarks.
+        """
+        video_path = Path(video_path)
+        if not video_path.exists():
+            raise FileNotFoundError(f"Video not found: {video_path}")
+
+        if output_path is None:
+            output_path = self.output_dir / f"{video_path.stem}_text.mp4"
+
+        # Escape special characters for FFmpeg drawtext filter
+        # Order matters: escape backslash first, then special chars
+        safe_text = text.replace("\\", "\\\\").replace("'", "\\\\'").replace(":", "\\:").replace("%", "\\%")
+
+        # bottom right placement: x=w-tw-20:y=h-th-20
+        cmd = [
+            "ffmpeg",
+            "-i", str(video_path),
+            "-vf", f"drawtext=text='{safe_text}':fontsize=28:fontcolor=white:x=w-tw-20:y=h-th-20:box=1:boxcolor=black@0.5:boxborderw=6",
+            "-c:a", "copy",
+            "-y",
+            "-loglevel", "error",
+            str(output_path)
+        ]
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+            if result.returncode != 0:
+                logger.warning(f"Text overlay failed: {result.stderr[:300]}")
+                return video_path
+
+            logger.info(f"Text overlaid: {output_path}")
+            return output_path
+
+        except Exception as e:
+            logger.warning(f"Text overlay error: {e}")
+            return video_path
+
+    # ── Aspect Ratio Rescale ──────────────────────────────────────
+
+    def rescale_aspect_ratio(
+        self,
+        video_path: Path,
+        aspect_ratio: str = "16:9",
+        output_path: Optional[Path] = None,
+    ) -> Path:
+        """
+        Rescale video to target aspect ratio with blurred background padding.
+
+        Supported ratios: 16:9, 9:16, 1:1
+        Uses a blurred background fill for bars instead of black.
+        """
+        video_path = Path(video_path)
+        if not video_path.exists():
+            raise FileNotFoundError(f"Video not found: {video_path}")
+
+        if aspect_ratio == "16:9":
+            return video_path  # Already default
+
+        ratio_map = {
+            "9:16": (1080, 1920),
+            "1:1": (1080, 1080),
+        }
+        target_w, target_h = ratio_map.get(aspect_ratio, (1920, 1080))
+
+        if output_path is None:
+            ratio_slug = aspect_ratio.replace(":", "x")
+            output_path = self.output_dir / f"{video_path.stem}_{ratio_slug}.mp4"
+
+        if output_path.exists() and output_path.stat().st_size > 0:
+            logger.info(f"Using cached rescaled video: {output_path}")
+            return output_path
+
+        # Use blurred background pad approach:
+        # 1. Scale + blur the background to fill target
+        # 2. Overlay the original scaled-to-fit on top
+        filter_complex = (
+            f"[0:v]scale={target_w}:{target_h}:force_original_aspect_ratio=increase,"
+            f"crop={target_w}:{target_h},boxblur=20:20[bg];"
+            f"[0:v]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease[fg];"
+            f"[bg][fg]overlay=(W-w)/2:(H-h)/2[out]"
+        )
+
+        cmd = [
+            "ffmpeg",
+            "-i", str(video_path),
+            "-filter_complex", filter_complex,
+            "-map", "[out]",
+            "-map", "0:a?",
+            "-c:v", "libx264",
+            "-c:a", "aac",
+            "-preset", "veryfast",
+            "-y",
+            "-loglevel", "error",
+            str(output_path),
+        ]
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+            if result.returncode != 0:
+                logger.warning(f"Aspect ratio rescale failed: {result.stderr[:300]}")
+                return video_path
+
+            logger.info(f"Rescaled to {aspect_ratio}: {output_path}")
+            return output_path
+
+        except Exception as e:
+            logger.warning(f"Aspect ratio rescale error: {e}")
+            return video_path
+
     # ── Concatenate clips ───────────────────────────────────────
 
     def concat_clips(

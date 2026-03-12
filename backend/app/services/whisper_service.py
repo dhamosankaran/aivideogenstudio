@@ -144,13 +144,11 @@ class WhisperService:
         scenes: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
         """
-        Get timing for each scene by proportionally allocating Whisper words
-        based on each scene's word count relative to the full script.
-
-        Why proportional instead of equal-division:
-          Daily Digest scenes have very different lengths — the hook is ~12 words
-          but a story beat is ~30 words. Equal division would cut mid-sentence,
-          causing images to change too early or late relative to the narration.
+        Get timing for each scene by aligning the script text with Whisper 
+        transcribed words using fuzzy matching (SequenceMatcher).
+        
+        This is much more accurate than proportional allocation, as it finds
+        exactly where the narrator spoke the transition words between scenes.
 
         Args:
             audio_path: Path to audio file
@@ -159,81 +157,145 @@ class WhisperService:
         Returns:
             Scenes with added start_time, end_time, duration, and words fields
         """
+        import difflib
+        
         timing_data = self.transcribe_audio(audio_path)
         all_words = timing_data["words"]
 
         total_words = len(all_words)
         total_scenes = len(scenes)
 
-        if total_scenes == 0 or total_words == 0:
+        if total_scenes == 0:
+            return scenes
+        
+        if total_words == 0:
+            # Fallback for silent audio or transcription failure
+            for sc in scenes:
+                sc["start_time"] = 0.0
+                sc["end_time"] = 0.0
+                sc["duration"] = 0.0
+                sc["words"] = []
             return scenes
 
-        # ── Proportional allocation ──────────────────────────────────────────
-        # Count words in each scene's script text to use as allocation weights.
-        # Falls back to equal division if any scene has no text.
-        scene_word_counts = []
-        for scene in scenes:
-            text = scene.get("text", "") or ""
-            wc = len(text.split())
-            scene_word_counts.append(max(wc, 1))  # min 1 to avoid zero-weight
-
-        total_script_words = sum(scene_word_counts)
-
-        # Convert counts to number of Whisper words to assign per scene
-        whisper_allocations = []
-        allocated = 0
-        for i, wc in enumerate(scene_word_counts):
-            if i == total_scenes - 1:
-                # Last scene gets all remaining words (avoids rounding gaps)
-                whisper_allocations.append(total_words - allocated)
-            else:
-                share = round(total_words * wc / total_script_words)
-                share = max(share, 1)
-                # Don't exceed remaining budget
-                share = min(share, total_words - allocated - (total_scenes - i - 1))
-                whisper_allocations.append(share)
-                allocated += share
-
-        logger.info(
-            f"[SceneTiming] Proportional allocation — {total_scenes} scenes, "
-            f"{total_words} Whisper words → {whisper_allocations}"
-        )
-
-        # ── Assign words → timing ────────────────────────────────────────────
-        enhanced_scenes = []
-        word_index = 0
-
+        # ── Step 1: Prepare word lists for alignment ────────────────────────
+        # We clean words (lowercase, no punctuation) for better matching.
+        
+        # All words expected from the script, tagged with their scene index
+        script_word_map = [] # List of (cleaned_word, original_index)
+        scene_word_ranges = [] # Start/end indices in script_word_map for each scene
+        
         for i, scene in enumerate(scenes):
-            start_idx = word_index
-            end_idx   = word_index + whisper_allocations[i]
-            end_idx   = min(end_idx, total_words)
+            words_in_scene = (scene.get("text", "") or "").split()
+            start_range = len(script_word_map)
+            for w in words_in_scene:
+                clean_w = w.lower().strip(".,!?;:\"()[]{}*-_")
+                if clean_w:
+                    script_word_map.append((clean_w, i))
+            end_range = len(script_word_map)
+            scene_word_ranges.append((start_range, end_range))
 
-            scene_words = all_words[start_idx:end_idx]
+        # All words actually transcribed by Whisper
+        transcribed_words_clean = [
+            w["word"].lower().strip(".,!?;:\"()[]{}*-_") 
+            for w in all_words
+        ]
+
+        # ── Step 2: Align lists using SequenceMatcher ──────────────────────
+        # This identifies matches, deletions, and insertions between script and audio.
+        matcher = difflib.SequenceMatcher(
+            None, 
+            [x[0] for x in script_word_map], 
+            transcribed_words_clean,
+            autojunk=False
+        )
+        
+        # Map each script word index to a transcribed word index
+        # Initialize with -1 (unmapped)
+        alignment_map = [-1] * len(script_word_map)
+        
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag == 'equal':
+                # Perfect match sequence
+                for k in range(i2 - i1):
+                    alignment_map[i1 + k] = j1 + k
+            elif tag == 'replace':
+                # Script words replaced by transcribed words (mismatch)
+                # Map them 1:1 if possible
+                num_replace = min(i2 - i1, j2 - j1)
+                for k in range(num_replace):
+                    alignment_map[i1 + k] = j1 + k
+        
+        # Fill in gaps (unmapped words) by interpolating between matches
+        # This handles cases where Whisper mis-transcribed or missing words
+        last_mapped_j = -1
+        for i in range(len(alignment_map)):
+            if alignment_map[i] == -1:
+                # Find next mapped j
+                next_mapped_j = total_words - 1
+                for k in range(i + 1, len(alignment_map)):
+                    if alignment_map[k] != -1:
+                        next_mapped_j = alignment_map[k]
+                        break
+                # Assign to nearest neighbor or midpoint
+                alignment_map[i] = max(0, min(total_words - 1, last_mapped_j + 1))
+            else:
+                last_mapped_j = alignment_map[i]
+
+        # ── Step 3: Assign transcribed words to scenes ─────────────────────
+        enhanced_scenes = []
+        
+        for i, (start_idx, end_idx) in enumerate(scene_word_ranges):
+            # Find the range of transcribed words for this scene
+            if start_idx < end_idx:
+                # Scene has words in script
+                first_trans_idx = alignment_map[start_idx]
+                last_trans_idx = alignment_map[end_idx - 1]
+                
+                # Ensure sequentiality and coverage
+                # Each scene should start where previous ended
+                if i == 0:
+                    scene_start_word = 0
+                else:
+                    # Start exactly at the end of the previous scene's last word index + 1
+                    # Or use the first mapped word if it's further ahead
+                    prev_end = alignment_map[scene_word_ranges[i-1][1]-1] if i > 0 else -1
+                    scene_start_word = prev_end + 1
+                
+                if i == total_scenes - 1:
+                    scene_end_word = total_words - 1
+                else:
+                    scene_end_word = max(scene_start_word, last_trans_idx)
+                
+                # Extract words
+                scene_words = all_words[scene_start_word : scene_end_word + 1]
+            else:
+                # Empty scene text - just take a tiny slice after previous scene
+                prev_end = alignment_map[scene_word_ranges[i-1][1]-1] if i > 0 else -1
+                scene_start_word = prev_end + 1
+                scene_end_word = prev_end
+                scene_words = []
 
             if scene_words:
                 scene_start    = scene_words[0]["start"]
                 scene_end      = scene_words[-1]["end"]
                 scene_duration = scene_end - scene_start
             else:
-                scene_start    = all_words[start_idx - 1]["end"] if start_idx > 0 else 0.0
+                scene_start    = all_words[scene_start_word - 1]["end"] if scene_start_word > 0 else 0.0
                 scene_end      = scene_start
                 scene_duration = 0.0
 
             enhanced_scenes.append({
-                **scene,
+                **scenes[i],
                 "start_time": scene_start,
                 "end_time":   scene_end,
                 "duration":   scene_duration,
                 "words":      scene_words,
             })
 
-            logger.debug(
-                f"[SceneTiming] Scene {i+1}: words[{start_idx}:{end_idx}] "
-                f"({len(scene_words)} words) → {scene_start:.2f}s–{scene_end:.2f}s "
-                f"(script_wc={scene_word_counts[i]})"
+            logger.info(
+                f"[SceneTiming] Scene {i+1}: transcribed_words[{scene_start_word}:{scene_end_word+1}] "
+                f"({len(scene_words)} words) -> {scene_start:.2f}s–{scene_end:.2f}s"
             )
-
-            word_index = end_idx
 
         return enhanced_scenes
 

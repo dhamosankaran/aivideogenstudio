@@ -137,7 +137,7 @@ class VideoDownloaderService:
 
         # Add platform-specific options
         if platform == "youtube":
-            cmd.extend(["--js-runtime", "node"])
+            pass
 
         cmd.append(url)
 
@@ -228,7 +228,7 @@ class VideoDownloaderService:
 
         # Platform-specific options
         if platform == "youtube":
-            cmd.extend(["--js-runtime", "node"])
+            pass
         elif platform == "twitter":
             # Twitter/X may need cookies; yt-dlp handles most cases
             pass

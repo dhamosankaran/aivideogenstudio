@@ -5,6 +5,7 @@ Phase 2.5: Analyze YouTube videos, extract insights, create Shorts.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import logging
@@ -35,6 +36,9 @@ from app.schemas.youtube_schemas import (
     EditorGenerateResponse,
     MusicLibraryResponse,
     MusicTrackResponse,
+    # Phase 4: Enhanced flow schemas
+    VoiceListResponse,
+    PreviewResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -85,6 +89,7 @@ async def analyze_youtube_video(
             channel_url=source.channel_url,
             duration_seconds=source.duration_seconds,
             thumbnail_url=source.thumbnail_url,
+            description=source.description,
             analysis_status="analyzing",
             insights_count=0,
             created_at=source.created_at,
@@ -117,6 +122,7 @@ async def list_youtube_sources(
             channel_url=s.channel_url,
             duration_seconds=s.duration_seconds,
             thumbnail_url=s.thumbnail_url,
+            description=s.description,
             analysis_status=s.analysis_status,
             error_message=s.error_message,
             insights_count=len(s.insights) if s.insights else 0,
@@ -167,6 +173,7 @@ async def get_youtube_source(
         channel_url=source.channel_url,
         duration_seconds=source.duration_seconds,
         thumbnail_url=source.thumbnail_url,
+        description=source.description,
         analysis_status=source.analysis_status,
         error_message=source.error_message,
         insights=insights_response,
@@ -468,6 +475,112 @@ async def reanalyze_source(
 
 
 # ═══════════════════════════════════════════════════════════════
+# Phase 4: Enhanced Flow Endpoints
+# ═══════════════════════════════════════════════════════════════
+
+
+@router.get("/voices", response_model=VoiceListResponse)
+async def get_available_voices_endpoint():
+    """
+    Get all available TTS voices grouped by provider.
+    Used by the Script Studio voice selector.
+    """
+    from app.voice_config import get_available_voices, get_voice_options_for_frontend
+
+    options = get_voice_options_for_frontend("youtube_import")
+
+    return VoiceListResponse(
+        default_provider=options["default_provider"],
+        providers=options["providers"],
+        voices=options["voices"],
+    )
+
+
+@router.post("/sources/{source_id}/preview", response_model=PreviewResponse)
+async def generate_preview_clip(
+    source_id: int,
+    request: EditorGenerateRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Generate a short 3-5 second preview clip with overlays applied.
+    Returns the preview file path for the frontend to display.
+    """
+    from app.services.video_editor_service import VideoEditorService
+    from pathlib import Path
+
+    service = YouTubeTranscriptService(db)
+    source = service.get_source(source_id)
+
+    if not source:
+        raise HTTPException(status_code=404, detail="YouTube source not found")
+
+    if not source.downloaded_path or not Path(source.downloaded_path).exists():
+        raise HTTPException(
+            status_code=400,
+            detail="Video not downloaded yet. Please download the video first.",
+        )
+
+    try:
+        editor = VideoEditorService()
+        working_path = Path(source.downloaded_path)
+
+        # Trim to a 5-second preview from the start of the trim range
+        preview_start = request.trim_start or 0
+        preview_end = min(preview_start + 5, request.trim_end or (source.duration_seconds or 60))
+        working_path = editor.trim_clip(working_path, preview_start, preview_end)
+
+        # Strip audio if requested
+        if request.strip_audio:
+            working_path = editor.strip_audio(working_path)
+
+        # Add text overlay as preview
+        preview_text = "Preview Mode"
+        if request.output_mode in ("text_overlay", "captions", "tts_captions"):
+            preview_text = source.title or "Preview"
+        working_path = editor.add_text_overlay(working_path, preview_text)
+
+        # Rescale aspect ratio if needed
+        if request.aspect_ratio and request.aspect_ratio != "16:9":
+            working_path = editor.rescale_aspect_ratio(working_path, request.aspect_ratio)
+
+        return PreviewResponse(
+            preview_url=f"/api/youtube/files/{working_path.name}",
+            duration=preview_end - preview_start,
+            source_id=source_id,
+        )
+    except Exception as e:
+        logger.error(f"Preview generation failed: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Preview generation failed: {str(e)}"
+        )
+
+
+@router.get("/files/{filename}")
+async def serve_editor_file(filename: str):
+    """
+    Serve a file from the editor output directory.
+    Used for preview clips and other generated files.
+    """
+    from pathlib import Path
+
+    editor_dir = Path("data/editor")
+    file_path = editor_dir / filename
+
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {filename}")
+
+    # Security: ensure the resolved path is within editor_dir
+    if not file_path.resolve().is_relative_to(editor_dir.resolve()):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    return FileResponse(
+        path=str(file_path),
+        media_type="video/mp4",
+        filename=filename,
+    )
+
+# ═══════════════════════════════════════════════════════════════
 # Phase 3: Universal Download & Editor Endpoints
 # ═══════════════════════════════════════════════════════════════
 
@@ -505,6 +618,7 @@ async def download_video(
         raise HTTPException(status_code=400, detail="Could not extract video ID from URL")
 
     # Check for existing source
+    from app.models import YouTubeSource
     existing = (
         db.query(YouTubeSource)
         .filter(YouTubeSource.youtube_video_id == video_id)
@@ -549,6 +663,7 @@ async def download_video(
                 channel_url=info.get("channel_url"),
                 duration_seconds=info.get("duration") or metadata.get("duration"),
                 thumbnail_url=info.get("thumbnail_url"),
+                description=info.get("description"),
                 downloaded_path=str(file_path),
                 analysis_status="downloaded",
             )
@@ -657,6 +772,93 @@ async def get_music_library():
     )
 
 
+@router.post("/sources/{source_id}/gemini-captions", response_model=TranscriptResponse)
+async def generate_gemini_captions(
+    source_id: int,
+    request: EditorGenerateRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Generate captions using Gemini Video Analyzer on a trimmed portion of the video.
+    Returns the transcript segments generated by Gemini model.
+    """
+    from app.services.video_editor_service import VideoEditorService
+    from app.services.gemini_video_service import GeminiVideoService
+    from pathlib import Path
+
+    service = YouTubeTranscriptService(db)
+    source = service.get_source(source_id)
+
+    if not source:
+        raise HTTPException(status_code=404, detail="YouTube source not found")
+
+    if not source.downloaded_path or not Path(source.downloaded_path).exists():
+        raise HTTPException(
+            status_code=400,
+            detail="Video not downloaded yet. Please download the video first.",
+        )
+
+    try:
+        editor = VideoEditorService()
+        working_path = Path(source.downloaded_path)
+
+        # Trim video before sending to Gemini to save cost/time
+        if request.trim_start is not None and request.trim_end is not None:
+            if request.trim_start >= request.trim_end:
+                raise HTTPException(
+                    status_code=400, detail="trim_start must be less than trim_end"
+                )
+            working_path = editor.trim_clip(
+                working_path, request.trim_start, request.trim_end
+            )
+
+        # Pass trimmed video to Gemini
+        gemini_service = GeminiVideoService()
+        caption_segments = gemini_service.generate_captions(
+            working_path,
+            video_title=source.title,
+            channel_name=source.channel_name
+        )
+
+        # Convert to TranscriptSegment
+        segments = []
+        full_text = ""
+        for seg in caption_segments:
+            text = seg.get("text", "").strip()
+            if not text:
+                continue
+            
+            segments.append(
+                TranscriptSegment(
+                    text=text,
+                    start=seg.get("start", 0),
+                    end=seg.get("end", 0),
+                )
+            )
+            full_text += text + " "
+
+        # Save these segments to the source for later use if needed
+        # Or just return them directly
+        source.transcript_segments = caption_segments
+        source.transcript_source = "gemini"
+        db.commit()
+
+        return TranscriptResponse(
+            source_id=source.id,
+            title=source.title,
+            transcript_source="gemini",
+            segments=segments,
+            full_text=full_text.strip(),
+            duration=working_path.stat().st_size,  # not actual duration, just placeholder
+        )
+
+    except Exception as e:
+        logger.error(f"Gemini caption generation failed: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Gemini caption generation failed: {str(e)}"
+        )
+
+
 # ═══════════════════════════════════════════════════════════════
 # Phase 3.3: Script Generation (transcript-only, no download needed)
 # ═══════════════════════════════════════════════════════════════
@@ -748,12 +950,15 @@ async def generate_script_from_transcript(
             else source.duration_seconds or 60
         )
 
-        # Build insight data for the script generator
+        # Build insight data for the script generator (enriched with description)
+        video_desc = source.description or ""
         insight_data = {
             "summary": source.video_summary or transcript_text[:300],
             "key_points": [],
             "hook": f"This from {source.channel_name or 'this video'} is incredible!",
             "transcript_text": transcript_text[:1500],
+            "video_description": video_desc[:500],
+            "video_title": source.title or "Video",
             "start_time": request.trim_start or 0,
             "end_time": request.trim_end or (source.duration_seconds or 60),
         }
@@ -1008,6 +1213,9 @@ async def approve_and_render(
     strip_audio: bool = True,
     music_track: str = None,
     music_volume: float = 0.12,
+    generate_tts: bool = False,
+    tts_provider: str = "openai",
+    credits_overlay: bool = False,
 ):
     """
     Approve a pending script and start full video pipeline:
@@ -1068,18 +1276,40 @@ async def approve_and_render(
                     working_path, music_path, music_volume
                 )
 
-        # Step 5: Update article with clip path
-        article.clip_path = str(working_path)
-        db.commit()
-
-        # Step 6: Approve the script
+        # Step 5: Approve the script (needed before TTS)
         script.script_status = "approved"
         script.status = "approved"
         db.commit()
 
-        # Step 7: Queue video generation
+        # Step 6: Generate TTS and overlay
+        if generate_tts:
+            from app.services.audio_service import AudioService
+            audio_service = AudioService(db)
+            try:
+                audio = await audio_service.generate_audio_from_script(
+                    script.id, tts_provider=tts_provider
+                )
+                audio_path = audio_service.get_audio_file_path(audio.id)
+                if audio_path and audio_path.exists():
+                    working_path = editor.overlay_tts_audio(
+                        working_path, audio_path, volume=1.0, ducking_volume=0.1
+                    )
+            except Exception as e:
+                logger.warning(f"TTS generation failed: {e}")
+
+        # Step 7: Text Overlay
+        if credits_overlay and source.channel_name:
+            working_path = editor.add_text_overlay(
+                working_path, f"Credits: {source.channel_name}"
+            )
+
+        # Step 8: Update article with clip path
+        article.clip_path = str(working_path)
+        db.commit()
+
+        # Step 9: Queue video generation
         background_tasks.add_task(
-            _generate_mode_a_video_task, db, script.id, str(working_path)
+            _generate_mode_a_video_task, db, script.id, str(working_path), tts_provider
         )
 
         return {
@@ -1290,59 +1520,113 @@ async def _analyze_insights_task(db: Session, source_id: int):
         db.close()
 
 
-async def _generate_mode_a_video_task(db: Session, script_id: int, clip_path: str):
+async def _generate_mode_a_video_task(db: Session, script_id: int, clip_path: str, tts_provider: str = "openai"):
     """
-    Background task for Mode A video generation.
-    
-    Generates audio, then renders video with clip integration.
+    Background task for Mode A (Clip + Commentary) video generation.
+
+    The clip at `clip_path` has already been processed by approve-and-render:
+      - trimmed, audio stripped, background music overlaid, TTS audio overlaid,
+        and optional credits text burned in.
+
+    This task:
+      1. Finds the most recent completed Audio record for the script (already generated).
+      2. Creates a Video DB record.
+      3. Calls _compose_mode_a_video which overlays word-level subtitles from Whisper
+         onto the real clip and appends the end screen.
+    No second TTS generation. No Pexels stock footage.
     """
     from app.database import SessionLocal
-    from app.services.audio_service import AudioService
     from app.services.enhanced_video_service import EnhancedVideoCompositionService
-    from app.models import Script, Video
-    
+    from app.models import Script, Audio, Video, Article
+    from pathlib import Path
+    from datetime import datetime, timezone
+    import os
+
     db = SessionLocal()
     try:
         script = db.query(Script).filter(Script.id == script_id).first()
         if not script:
-            logger.error(f"Script {script_id} not found for Mode A video generation")
+            logger.error(f"[Mode A] Script {script_id} not found")
             return
-        
-        # Step 1: Generate audio for commentary
-        logger.info(f"Mode A: Generating audio for script {script_id}")
-        audio_service = AudioService(db)
-        audio = await audio_service.generate_audio_from_script(
-            script_id=script_id,
-            tts_provider="google"
+
+        # Resolve clip path
+        clip = Path(clip_path)
+        if not clip.exists():
+            clip = Path.cwd() / clip_path
+        if not clip.exists():
+            logger.error(f"[Mode A] Clip not found: {clip_path}")
+            return
+
+        # Find the most recent completed Audio for this script (generated during approve-and-render)
+        audio = (
+            db.query(Audio)
+            .filter(Audio.script_id == script_id, Audio.status == "completed")
+            .order_by(Audio.created_at.desc())
+            .first()
         )
-        
-        # Step 2: Create video task
-        logger.info(f"Mode A: Creating video task for script {script_id}")
-        video_service = EnhancedVideoCompositionService(db)
-        video = video_service.create_video_task(
+        if not audio:
+            logger.error(f"[Mode A] No completed audio found for script {script_id}")
+            return
+
+        logger.info(f"[Mode A] Script {script_id} | clip={clip.name} | audio={audio.file_path}")
+
+        # Create Video DB record
+        video = Video(
             script_id=script_id,
             audio_id=audio.id,
-            background_style="scenes"
+            status="rendering",
+            youtube_title=script.catchy_title,
+            youtube_description=script.video_description,
+            render_settings={
+                "mode": "A",
+                "clip_path": str(clip),
+                "resolution": "source",
+            },
         )
-        
-        # Store clip path in video metadata for later use
-        if video.render_settings:
-            video.render_settings['clip_path'] = clip_path
-            video.render_settings['mode'] = 'A'
-        else:
-            video.render_settings = {'clip_path': clip_path, 'mode': 'A'}
-        
+        db.add(video)
         db.commit()
         db.refresh(video)
-        
-        # Step 3: Render video
-        logger.info(f"Mode A: Rendering video {video.id}")
-        video_service.process_video(video.id)
-        
-        logger.info(f"Mode A: Video generation complete for script {script_id}")
-        
+
+        # Set output path
+        video_dir = Path("data/videos")
+        video_dir.mkdir(parents=True, exist_ok=True)
+        start_time = datetime.now()
+        output_path = video_dir / f"video_{video.id}_{start_time.strftime('%Y%m%d_%H%M%S')}.mp4"
+
+        # Compose: real clip + Whisper subtitles + end screen
+        video_service = EnhancedVideoCompositionService(db)
+        video_service._compose_mode_a_video(
+            script=script,
+            audio_path=Path(audio.file_path),
+            clip_path=clip,
+            output_path=output_path,
+        )
+
+        # Update video record
+        video.file_path = str(output_path)
+        video.status = "completed"
+        video.completed_at = datetime.now(timezone.utc)
+        video.processing_time = (datetime.now() - start_time).total_seconds()
+        if output_path.exists():
+            video.file_size = output_path.stat().st_size
+            video.duration = audio.duration
+        db.commit()
+
+        logger.info(f"[Mode A] Video {video.id} complete → {output_path.name} ({video.file_size // 1024 // 1024}MB)")
+
     except Exception as e:
-        logger.error(f"Mode A video generation failed for script {script_id}: {str(e)}")
+        logger.error(f"[Mode A] Video generation failed for script {script_id}: {e}", exc_info=True)
+        # Try to mark video as failed if it was created
+        try:
+            failed_video = db.query(Video).filter(
+                Video.script_id == script_id,
+                Video.status == "rendering"
+            ).order_by(Video.created_at.desc()).first()
+            if failed_video:
+                failed_video.status = "failed"
+                failed_video.error_message = str(e)
+                db.commit()
+        except Exception:
+            pass
     finally:
         db.close()
-

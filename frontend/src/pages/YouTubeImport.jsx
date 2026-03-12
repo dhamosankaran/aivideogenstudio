@@ -1,1090 +1,1096 @@
+/**
+ * YouTubeImport.jsx — v2 Enhanced 4-Step Wizard
+ *
+ * Step 1: Smart Import   — Paste URL, one-click download + analyze, shows metadata
+ * Step 2: Trim & Preview — YT player + trim sliders + transcript + smart trim suggestions
+ * Step 3: Script Studio  — Inline editing + output mode + voice + captions + aspect ratio + music
+ * Step 4: Generate       — Summary + preview + one-click render
+ */
+
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useAppNavigate } from '../context/ProjectContext';
 import {
-    analyzeYouTubeVideo,
-    getYouTubeSources,
-    getYouTubeSource,
-    getVideoSummary,
-    getVideoInfo,
-    downloadVideo,
-    getTranscript,
-    getMusicLibrary,
-    editorGenerate,
-    generateScript,
-    approveAndRender,
-    generateModeA,
-    generateModeB,
-    trimAndGenerate
+  analyzeYouTubeVideo,
+  getYouTubeSources,
+  getYouTubeSource,
+  getVideoSummary,
+  getTranscript,
+  getMusicLibrary,
+  downloadVideo,
+  getVideoInfo,
+  generateScript,
+  approveAndRender,
+  getVoices,
+  generatePreview,
 } from '../services/youtubeApi';
 import './YouTubeImport.css';
 
-// ── Wizard Step Constants ──────────────────────────────────────
-const STEPS = {
-    URL_INPUT: 0,
-    VIDEO_OVERVIEW: 1,
-    EDITOR: 2,
-    MUSIC_CAPTIONS: 3,
-    GENERATE: 4,
-};
-
-const STEP_LABELS = [
-    'Import',
-    'Overview',
-    'Editor',
-    'Audio & Captions',
-    'Generate',
+const STEPS = [
+  { id: 1, label: 'Import', icon: '📥' },
+  { id: 2, label: 'Trim & Preview', icon: '✂️' },
+  { id: 3, label: 'Script Studio', icon: '🎬' },
+  { id: 4, label: 'Generate', icon: '🚀' },
 ];
 
-// ── Platform Icons ─────────────────────────────────────────────
-const PLATFORM_ICONS = {
-    youtube: '🔴',
-    twitter: '🐦',
-    linkedin: '💼',
-    unknown: '🔗',
-};
-
-function YouTubeImport() {
-    const { navigateTo } = useAppNavigate();
-
-    // ── Wizard state ───────────────────────────────────────────
-    const [currentStep, setCurrentStep] = useState(STEPS.URL_INPUT);
-
-    // ── Step 1: URL Input state ────────────────────────────────
-    const [videoUrl, setVideoUrl] = useState('');
-    const [detectedPlatform, setDetectedPlatform] = useState(null);
-    const [isDownloading, setIsDownloading] = useState(false);
-    const [isAnalyzing, setIsAnalyzing] = useState(false);
-    const [sources, setSources] = useState([]);
-
-    // ── Step 2: Overview state ─────────────────────────────────
-    const [selectedSource, setSelectedSource] = useState(null);
-    const [videoSummary, setVideoSummary] = useState(null);
-    const [isLoadingSummary, setIsLoadingSummary] = useState(false);
-    const [transcript, setTranscript] = useState(null);
-    const [isLoadingTranscript, setIsLoadingTranscript] = useState(false);
-
-    // ── Step 3: Editor state ───────────────────────────────────
-    const [trimStart, setTrimStart] = useState(0);
-    const [trimEnd, setTrimEnd] = useState(60);
-    const [stripAudio, setStripAudio] = useState(true);
-
-    // ── Step 4: Music & Captions state ─────────────────────────
-    const [musicLibrary, setMusicLibrary] = useState([]);
-    const [selectedMusic, setSelectedMusic] = useState(null);
-    const [musicVolume, setMusicVolume] = useState(0.12);
-    const [captionSource, setCaptionSource] = useState('transcript');
-
-    // ── Step 5: Generate state ─────────────────────────────────
-    const [commentaryStyle, setCommentaryStyle] = useState('reaction');
-    const [contentType, setContentType] = useState('youtube_import');
-    const [isGenerating, setIsGenerating] = useState(false);
-    const [isApproving, setIsApproving] = useState(false);
-    const [generationResult, setGenerationResult] = useState(null);
-    const [scriptPreview, setScriptPreview] = useState(null);
-
-    // ── Shared state ───────────────────────────────────────────
-    const [error, setError] = useState(null);
-    const [successMessage, setSuccessMessage] = useState(null);
-    const [pollingId, setPollingId] = useState(null);
-
-    // ── Refs ────────────────────────────────────────────────────
-    const timelineRef = useRef(null);
-    const playerRef = useRef(null);
-    const seekTimerRef = useRef(null);
-
-    // ── Effects ────────────────────────────────────────────────
-    useEffect(() => { loadSources(); }, []);
-    useEffect(() => () => { if (pollingId) clearInterval(pollingId); }, [pollingId]);
-
-    // Auto-detect platform as user types URL
-    useEffect(() => {
-        if (!videoUrl.trim()) {
-            setDetectedPlatform(null);
-            return;
-        }
-        if (/youtube\.com|youtu\.be/i.test(videoUrl)) setDetectedPlatform('youtube');
-        else if (/twitter\.com|x\.com/i.test(videoUrl)) setDetectedPlatform('twitter');
-        else if (/linkedin\.com/i.test(videoUrl)) setDetectedPlatform('linkedin');
-        else setDetectedPlatform('unknown');
-    }, [videoUrl]);
-
-    // ── Data loaders ───────────────────────────────────────────
-
-    const loadSources = async () => {
-        try {
-            const data = await getYouTubeSources(20);
-            setSources(data);
-        } catch (err) {
-            console.error('Failed to load sources:', err);
-        }
-    };
-
-    const loadTranscript = useCallback(async (sourceId) => {
-        setIsLoadingTranscript(true);
-        try {
-            const data = await getTranscript(sourceId);
-            setTranscript(data);
-        } catch (err) {
-            console.error('Transcript load failed:', err);
-            setTranscript(null);
-        } finally {
-            setIsLoadingTranscript(false);
-        }
-    }, []);
-
-    const loadSummary = useCallback(async (sourceId) => {
-        setIsLoadingSummary(true);
-        try {
-            const data = await getVideoSummary(sourceId);
-            setVideoSummary(data);
-        } catch (err) {
-            console.error('Summary load failed:', err);
-        } finally {
-            setIsLoadingSummary(false);
-        }
-    }, []);
-
-    const loadMusicLibrary = useCallback(async () => {
-        try {
-            const data = await getMusicLibrary();
-            setMusicLibrary(data.tracks || []);
-            if (data.tracks?.length > 0 && !selectedMusic) {
-                setSelectedMusic(data.tracks[0].filename);
-            }
-        } catch (err) {
-            console.error('Music library load failed:', err);
-        }
-    }, [selectedMusic]);
-
-    // ── Polling ────────────────────────────────────────────────
-
-    const startPolling = (sourceId) => {
-        if (pollingId) clearInterval(pollingId);
-        const id = setInterval(async () => {
-            try {
-                const source = await getYouTubeSource(sourceId);
-                setSelectedSource(source);
-                if (source.analysis_status === 'completed' || source.analysis_status === 'failed') {
-                    clearInterval(id);
-                    setPollingId(null);
-                    loadSources();
-                    if (source.analysis_status === 'completed') {
-                        setTrimEnd(Math.min(source.duration_seconds || 60, 60));
-                        // Auto-load summary and transcript when analysis completes
-                        loadSummary(source.id);
-                        loadTranscript(source.id);
-                    }
-                }
-            } catch (err) {
-                clearInterval(id);
-                setPollingId(null);
-            }
-        }, 2000);
-        setPollingId(id);
-    };
-
-    // ── Step 1 Handlers ────────────────────────────────────────
-
-    const handleAnalyzeAndDownload = async () => {
-        if (!videoUrl.trim()) {
-            setError('Please enter a video URL');
-            return;
-        }
-        setIsDownloading(true);
-        setIsAnalyzing(true);
-        setError(null);
-        setSuccessMessage(null);
-
-        try {
-            // Step A: Try to analyze (creates source + extracts transcript + insights)
-            const source = await analyzeYouTubeVideo(videoUrl);
-            setSelectedSource(source);
-
-            // Download in parallel (background task on backend handles transcript)
-            try {
-                await downloadVideo(videoUrl, false);
-            } catch (dlErr) {
-                console.warn('Download step skipped:', dlErr.message);
-            }
-
-            setVideoUrl('');
-            startPolling(source.id);
-            setCurrentStep(STEPS.VIDEO_OVERVIEW);
-            setSuccessMessage('Video imported! Analyzing...');
-        } catch (err) {
-            setError(err.message);
-        } finally {
-            setIsDownloading(false);
-            setIsAnalyzing(false);
-        }
-    };
-
-    const handleQuickDownload = async () => {
-        if (!videoUrl.trim()) {
-            setError('Please enter a video URL');
-            return;
-        }
-        setIsDownloading(true);
-        setError(null);
-
-        try {
-            const result = await downloadVideo(videoUrl, false);
-            setSuccessMessage(`Downloaded from ${result.platform}!`);
-            if (result.source_id) {
-                const source = await getYouTubeSource(result.source_id);
-                setSelectedSource(source);
-                setTrimEnd(Math.min(source.duration_seconds || 60, 60));
-                setCurrentStep(STEPS.VIDEO_OVERVIEW);
-                // Load transcript/summary for quick-downloaded source
-                loadTranscript(source.id);
-                loadSummary(source.id);
-            }
-            setVideoUrl('');
-            loadSources();
-        } catch (err) {
-            setError(err.message);
-        } finally {
-            setIsDownloading(false);
-        }
-    };
-
-    const handleSelectSource = async (source) => {
-        try {
-            const fullSource = await getYouTubeSource(source.id);
-            setSelectedSource(fullSource);
-            setTrimStart(0);
-            setTrimEnd(Math.min(fullSource.duration_seconds || 60, 60));
-            setCurrentStep(STEPS.VIDEO_OVERVIEW);
-
-            if (fullSource.analysis_status === 'analyzing') {
-                startPolling(fullSource.id);
-            } else if (fullSource.analysis_status === 'completed' || fullSource.analysis_status === 'transcript_ready') {
-                // Source already analyzed — load data immediately
-                loadSummary(fullSource.id);
-                loadTranscript(fullSource.id);
-            }
-        } catch (err) {
-            setError(err.message);
-        }
-    };
-
-    // ── Step navigation ────────────────────────────────────────
-
-    const goToStep = (step) => {
-        if (step === STEPS.VIDEO_OVERVIEW && selectedSource) {
-            loadTranscript(selectedSource.id);
-            loadSummary(selectedSource.id);
-        }
-        if (step === STEPS.MUSIC_CAPTIONS) {
-            loadMusicLibrary();
-        }
-        setCurrentStep(step);
-    };
-
-    const canProceed = () => {
-        switch (currentStep) {
-            case STEPS.URL_INPUT: return !!selectedSource;
-            case STEPS.VIDEO_OVERVIEW: return !!selectedSource;
-            case STEPS.EDITOR: return trimStart < trimEnd;
-            case STEPS.MUSIC_CAPTIONS: return true;
-            case STEPS.GENERATE: return false;
-            default: return false;
-        }
-    };
-
-    // ── Step 5: Generate Script → Review → Render ──────────────
-
-    const handleGenerateScript = async () => {
-        if (!selectedSource) return;
-        setIsGenerating(true);
-        setError(null);
-        setScriptPreview(null);
-
-        try {
-            const result = await generateScript(selectedSource.id, {
-                trimStart,
-                trimEnd,
-                stripAudio,
-                musicTrack: selectedMusic,
-                musicVolume,
-                generateCaptions: captionSource !== 'none',
-                captionSource,
-                commentaryStyle,
-                contentType,
-            });
-
-            setGenerationResult(result);
-
-            // Store script preview data
-            setScriptPreview({
-                script_preview: result.script_preview,
-                catchy_title: result.catchy_title,
-                scenes: result.scenes,
-                script_id: result.script_id,
-                article_id: result.article_id,
-            });
-        } catch (err) {
-            setError(err.message);
-        } finally {
-            setIsGenerating(false);
-        }
-    };
-
-    const handleApproveAndRender = async () => {
-        if (!scriptPreview?.script_id) return;
-        setIsApproving(true);
-        setError(null);
-
-        try {
-            const result = await approveAndRender(scriptPreview.script_id, {
-                trimStart,
-                trimEnd,
-                stripAudio,
-                musicTrack: selectedMusic,
-                musicVolume,
-            });
-            setGenerationResult(result);
-            setSuccessMessage(result.message || 'Video rendering started!');
-
-            if (result.redirect_to) {
-                setTimeout(() => navigateTo(result.redirect_to.replace('/', '')), 2500);
-            }
-        } catch (err) {
-            setError(err.message);
-        } finally {
-            setIsApproving(false);
-        }
-    };
-
-    // ── YouTube IFrame API (for Editor step) ───────────────────
-
-    useEffect(() => {
-        if (currentStep !== STEPS.EDITOR || !selectedSource?.youtube_video_id) return;
-
-        // Load YouTube IFrame API if not already loaded
-        if (!window.YT) {
-            const tag = document.createElement('script');
-            tag.src = 'https://www.youtube.com/iframe_api';
-            document.body.appendChild(tag);
-        }
-
-        const initPlayer = () => {
-            const container = document.getElementById('yt-editor-player');
-            if (!container) return;
-
-            // Destroy previous player if exists
-            if (playerRef.current && playerRef.current.destroy) {
-                try { playerRef.current.destroy(); } catch (e) { /* ignore */ }
-            }
-
-            playerRef.current = new window.YT.Player('yt-editor-player', {
-                videoId: selectedSource.youtube_video_id,
-                playerVars: {
-                    start: Math.floor(trimStart),
-                    rel: 0,
-                    modestbranding: 1,
-                    playsinline: 1,
-                },
-                events: {
-                    onReady: (event) => {
-                        event.target.seekTo(Math.floor(trimStart), true);
-                    },
-                },
-            });
-        };
-
-        if (window.YT && window.YT.Player) {
-            // Small delay to ensure DOM element is rendered
-            setTimeout(initPlayer, 100);
-        } else {
-            window.onYouTubeIframeAPIReady = initPlayer;
-        }
-
-        return () => {
-            if (playerRef.current && playerRef.current.destroy) {
-                try { playerRef.current.destroy(); } catch (e) { /* ignore */ }
-                playerRef.current = null;
-            }
-        };
-    }, [currentStep, selectedSource?.youtube_video_id]);
-
-    // Debounced seek when sliders change
-    useEffect(() => {
-        if (currentStep !== STEPS.EDITOR) return;
-        if (!playerRef.current || !playerRef.current.seekTo) return;
-
-        // Debounce: wait 400ms after slider stops moving before seeking
-        if (seekTimerRef.current) clearTimeout(seekTimerRef.current);
-        seekTimerRef.current = setTimeout(() => {
-            try {
-                playerRef.current.seekTo(Math.floor(trimStart), true);
-            } catch (e) { /* player might not be ready */ }
-        }, 400);
-
-        return () => {
-            if (seekTimerRef.current) clearTimeout(seekTimerRef.current);
-        };
-    }, [trimStart, currentStep]);
-
-    // ── Helpers ─────────────────────────────────────────────────
-
-    const formatDuration = (seconds) => {
-        if (!seconds) return '--:--';
-        const mins = Math.floor(seconds / 60);
-        const secs = Math.floor(seconds % 60);
-        return `${mins}:${secs.toString().padStart(2, '0')}`;
-    };
-
-    const formatTimestamp = (seconds) => {
-        const mins = Math.floor(seconds / 60);
-        const secs = Math.floor(seconds % 60);
-        return `${mins}:${secs.toString().padStart(2, '0')}`;
-    };
-
-    // ── Render ──────────────────────────────────────────────────
-
-    return (
-        <div className="youtube-import wizard-mode">
-            {/* Progress Steps */}
-            <div className="wizard-steps">
-                {STEP_LABELS.map((label, idx) => (
-                    <div
-                        key={idx}
-                        className={`wizard-step ${idx === currentStep ? 'active' : ''} ${idx < currentStep ? 'completed' : ''}`}
-                        onClick={() => idx <= currentStep && goToStep(idx)}
-                    >
-                        <div className="step-number">
-                            {idx < currentStep ? '✓' : idx + 1}
-                        </div>
-                        <div className="step-label">{label}</div>
-                    </div>
-                ))}
-            </div>
-
-            {/* Error / Success */}
-            {error && <div className="yt-error">{error} <button className="dismiss-btn" onClick={() => setError(null)}>×</button></div>}
-            {successMessage && <div className="yt-success">{successMessage} <button className="dismiss-btn" onClick={() => setSuccessMessage(null)}>×</button></div>}
-
-            {/* === STEP 1: URL INPUT === */}
-            {currentStep === STEPS.URL_INPUT && (
-                <div className="wizard-panel step-url-input">
-                    <div className="wizard-panel-header">
-                        <div className="yt-header-icon">🎬</div>
-                        <div>
-                            <h2>Import Video</h2>
-                            <p>Paste a URL from YouTube, X/Twitter, or LinkedIn</p>
-                        </div>
-                    </div>
-
-                    <div className="yt-input-section">
-                        <div className="yt-input-wrapper">
-                            {detectedPlatform && (
-                                <span className="platform-badge" title={detectedPlatform}>
-                                    {PLATFORM_ICONS[detectedPlatform] || '🔗'}
-                                </span>
-                            )}
-                            <input
-                                type="text"
-                                placeholder="Paste video URL here..."
-                                value={videoUrl}
-                                onChange={(e) => setVideoUrl(e.target.value)}
-                                onKeyDown={(e) => e.key === 'Enter' && handleAnalyzeAndDownload()}
-                                className="yt-url-input"
-                            />
-                        </div>
-                        <div className="url-actions">
-                            <button
-                                onClick={handleAnalyzeAndDownload}
-                                disabled={isAnalyzing || isDownloading}
-                                className="yt-analyze-btn primary"
-                            >
-                                {isAnalyzing ? <span className="loading-spinner" /> : <>🔍 Analyze & Import</>}
-                            </button>
-                            <button
-                                onClick={handleQuickDownload}
-                                disabled={isDownloading}
-                                className="yt-analyze-btn secondary"
-                                title="Download video without full analysis"
-                            >
-                                {isDownloading ? <span className="loading-spinner" /> : <>⬇️ Quick Download</>}
-                            </button>
-                        </div>
-                    </div>
-
-                    {/* Recent imports sidebar */}
-                    <div className="recent-imports">
-                        <h3>📹 Recent Imports</h3>
-                        <div className="yt-source-list">
-                            {sources.map(source => (
-                                <div
-                                    key={source.id}
-                                    className={`yt-source-card ${selectedSource?.id === source.id ? 'active' : ''}`}
-                                    onClick={() => handleSelectSource(source)}
-                                >
-                                    <img
-                                        src={source.thumbnail_url || '/placeholder-thumb.png'}
-                                        alt=""
-                                        className="yt-source-thumb"
-                                    />
-                                    <div className="yt-source-info">
-                                        <div className="yt-source-title">{source.title || 'Untitled Video'}</div>
-                                        <div className="yt-source-meta">
-                                            <span className={`status-badge ${source.analysis_status}`}>
-                                                {source.analysis_status}
-                                            </span>
-                                            {source.insights_count > 0 && (
-                                                <span className="insight-count">{source.insights_count} insights</span>
-                                            )}
-                                        </div>
-                                    </div>
-                                </div>
-                            ))}
-                            {sources.length === 0 && (
-                                <div className="yt-empty-state">
-                                    No videos imported yet. Paste a URL above to get started!
-                                </div>
-                            )}
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {/* === STEP 2: VIDEO OVERVIEW === */}
-            {currentStep === STEPS.VIDEO_OVERVIEW && selectedSource && (
-                <div className="wizard-panel step-overview">
-                    {/* Video header with embedded player */}
-                    <div className="yt-video-header">
-                        {selectedSource.youtube_video_id ? (
-                            <div className="video-player-wrapper">
-                                <iframe
-                                    src={`https://www.youtube.com/embed/${selectedSource.youtube_video_id}?rel=0&modestbranding=1`}
-                                    title={selectedSource.title || 'Video'}
-                                    frameBorder="0"
-                                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                                    allowFullScreen
-                                    className="video-player-iframe"
-                                />
-                            </div>
-                        ) : (
-                            <img
-                                src={selectedSource.thumbnail_url}
-                                alt=""
-                                className="yt-video-thumb"
-                            />
-                        )}
-                        <div className="yt-video-info">
-                            <h2>{selectedSource.title || 'Analyzing...'}</h2>
-                            <div className="yt-video-meta">
-                                {selectedSource.channel_name && (
-                                    <span className="channel-name">👤 {selectedSource.channel_name}</span>
-                                )}
-                                <span className="duration">⏱️ {formatDuration(selectedSource.duration_seconds)}</span>
-                                <span className={`status-badge ${selectedSource.analysis_status}`}>
-                                    {selectedSource.analysis_status === 'analyzing' && '⏳ '}
-                                    {selectedSource.analysis_status}
-                                </span>
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* Analyzing state */}
-                    {selectedSource.analysis_status === 'analyzing' && (
-                        <div className="yt-analyzing-state">
-                            <div className="analyzing-animation">
-                                <div className="brain-icon">🧠</div>
-                                <div className="analyzing-text">AI is extracting transcript & finding insights...</div>
-                                <div className="analyzing-subtext">This usually takes 15-30 seconds</div>
-                            </div>
-                        </div>
-                    )}
-
-                    {/* Two-column: Summary + Transcript */}
-                    {(selectedSource.analysis_status === 'completed' || selectedSource.analysis_status === 'downloaded' || selectedSource.analysis_status === 'transcript_ready') && (
-                        <div className="overview-columns">
-                            {/* Summary Panel */}
-                            <div className="overview-panel summary-panel">
-                                <h3>📋 AI Summary</h3>
-                                {isLoadingSummary ? (
-                                    <div className="panel-loading"><span className="loading-spinner" /> Generating...</div>
-                                ) : videoSummary ? (
-                                    <div className="summary-text-block">
-                                        {videoSummary.video_summary}
-                                    </div>
-                                ) : (
-                                    <div className="panel-empty">Summary will be available after analysis completes.</div>
-                                )}
-                            </div>
-
-                            {/* Transcript Panel */}
-                            <div className="overview-panel transcript-panel">
-                                <h3>📝 Transcript</h3>
-                                {isLoadingTranscript ? (
-                                    <div className="panel-loading"><span className="loading-spinner" /> Loading...</div>
-                                ) : transcript && transcript.segments?.length > 0 ? (
-                                    <div className="transcript-scroll">
-                                        {transcript.segments.map((seg, i) => (
-                                            <div
-                                                key={i}
-                                                className="transcript-segment"
-                                                onClick={() => {
-                                                    setTrimStart(Math.floor(seg.start));
-                                                    setTrimEnd(Math.min(Math.ceil(seg.end), selectedSource.duration_seconds || 60));
-                                                }}
-                                                title="Click to set trim range"
-                                            >
-                                                <span className="ts-time">{formatTimestamp(seg.start)}</span>
-                                                <span className="ts-text">{seg.text}</span>
-                                            </div>
-                                        ))}
-                                    </div>
-                                ) : (
-                                    <div className="panel-empty">
-                                        No transcript available yet. It will appear once analysis finishes.
-                                    </div>
-                                )}
-                                {transcript && (
-                                    <div className="transcript-source-tag">
-                                        Source: {transcript.transcript_source || 'youtube_captions'}
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-                    )}
-
-                    {/* Insights (if available) */}
-                    {selectedSource.insights && selectedSource.insights.length > 0 && (
-                        <div className="overview-insights">
-                            <h3>🎯 Key Insights ({selectedSource.insights.length})</h3>
-                            <div className="insights-grid">
-                                {selectedSource.insights.slice(0, 6).map((insight, idx) => (
-                                    <div
-                                        key={idx}
-                                        className="insight-mini-card"
-                                        onClick={() => {
-                                            setTrimStart(Math.floor(insight.start_time));
-                                            setTrimEnd(Math.ceil(insight.end_time || insight.start_time + 30));
-                                            goToStep(STEPS.EDITOR);
-                                        }}
-                                    >
-                                        <div className="insight-mini-time">
-                                            [{insight.formatted_time}] ⭐ {insight.viral_score}/10
-                                        </div>
-                                        <div className="insight-mini-summary">{insight.summary}</div>
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                    )}
-
-                    <div className="wizard-nav">
-                        <button className="nav-btn back" onClick={() => goToStep(STEPS.URL_INPUT)}>
-                            ← Back
-                        </button>
-                        <button
-                            className="nav-btn next"
-                            onClick={() => goToStep(STEPS.EDITOR)}
-                        >
-                            Next: Edit Video →
-                        </button>
-                    </div>
-                </div>
-            )}
-
-            {/* === STEP 3: VIDEO EDITOR === */}
-            {currentStep === STEPS.EDITOR && selectedSource && (
-                <div className="wizard-panel step-editor">
-                    <div className="wizard-panel-header">
-                        <h2>✂️ Video Editor</h2>
-                        <p>Trim your clip and control audio</p>
-                    </div>
-
-                    {/* Video Preview with YouTube IFrame API */}
-                    {selectedSource.youtube_video_id && (
-                        <div className="editor-video-preview">
-                            <div className="video-player-wrapper editor-player">
-                                <div id="yt-editor-player" />
-                            </div>
-                            <div className="preview-controls">
-                                <button
-                                    className="play-selection-btn"
-                                    onClick={() => {
-                                        if (playerRef.current && playerRef.current.seekTo) {
-                                            playerRef.current.seekTo(Math.floor(trimStart), true);
-                                            playerRef.current.playVideo();
-                                        }
-                                    }}
-                                >
-                                    ▶ Play Selection ({formatTimestamp(trimStart)} → {formatTimestamp(trimEnd)})
-                                </button>
-                            </div>
-                        </div>
-                    )}
-
-                    {/* Timeline */}
-                    <div className="editor-timeline" ref={timelineRef}>
-                        <div className="timeline-bar">
-                            <div
-                                className="timeline-selection"
-                                style={{
-                                    left: `${(trimStart / (selectedSource.duration_seconds || 60)) * 100}%`,
-                                    width: `${((trimEnd - trimStart) / (selectedSource.duration_seconds || 60)) * 100}%`
-                                }}
-                            />
-                            <div
-                                className="timeline-handle start"
-                                style={{ left: `${(trimStart / (selectedSource.duration_seconds || 60)) * 100}%` }}
-                                title={`Start: ${formatTimestamp(trimStart)}`}
-                            />
-                            <div
-                                className="timeline-handle end"
-                                style={{ left: `${(trimEnd / (selectedSource.duration_seconds || 60)) * 100}%` }}
-                                title={`End: ${formatTimestamp(trimEnd)}`}
-                            />
-                        </div>
-                        <div className="timeline-labels">
-                            <span>0:00</span>
-                            <span>{formatDuration(selectedSource.duration_seconds)}</span>
-                        </div>
-                    </div>
-
-                    {/* Trim inputs */}
-                    <div className="editor-controls">
-                        <div className="control-group">
-                            <label>Start Time</label>
-                            <div className="time-input-wrapper">
-                                <input
-                                    type="range"
-                                    min={0}
-                                    max={selectedSource.duration_seconds || 60}
-                                    value={trimStart}
-                                    onChange={(e) => {
-                                        const val = Number(e.target.value);
-                                        setTrimStart(Math.min(val, trimEnd - 1));
-                                    }}
-                                    className="time-slider"
-                                />
-                                <span className="time-display">{formatTimestamp(trimStart)}</span>
-                            </div>
-                        </div>
-
-                        <div className="control-group">
-                            <label>End Time</label>
-                            <div className="time-input-wrapper">
-                                <input
-                                    type="range"
-                                    min={0}
-                                    max={selectedSource.duration_seconds || 60}
-                                    value={trimEnd}
-                                    onChange={(e) => {
-                                        const val = Number(e.target.value);
-                                        setTrimEnd(Math.max(val, trimStart + 1));
-                                    }}
-                                    className="time-slider"
-                                />
-                                <span className="time-display">{formatTimestamp(trimEnd)}</span>
-                            </div>
-                        </div>
-
-                        <div className="clip-info">
-                            <span className="clip-duration">
-                                📏 Clip Duration: <strong>{formatDuration(trimEnd - trimStart)}</strong>
-                            </span>
-                        </div>
-                    </div>
-
-                    {/* Audio toggle */}
-                    <div className="audio-control">
-                        <label className="toggle-switch">
-                            <input
-                                type="checkbox"
-                                checked={stripAudio}
-                                onChange={(e) => setStripAudio(e.target.checked)}
-                            />
-                            <span className="toggle-slider" />
-                            <span className="toggle-label">
-                                {stripAudio ? '🔇 Original Audio Muted' : '🔊 Keep Original Audio'}
-                            </span>
-                        </label>
-                    </div>
-
-                    {/* Relevant transcript segments for the trim range */}
-                    {transcript && transcript.segments?.length > 0 && (
-                        <div className="editor-transcript-preview">
-                            <h4>📝 Transcript in selection</h4>
-                            <div className="transcript-preview-scroll">
-                                {transcript.segments
-                                    .filter(s => s.start >= trimStart && s.end <= trimEnd)
-                                    .slice(0, 20)
-                                    .map((seg, i) => (
-                                        <span key={i} className="ts-preview-text">{seg.text} </span>
-                                    ))}
-                                {transcript.segments.filter(s => s.start >= trimStart && s.end <= trimEnd).length === 0 && (
-                                    <span className="ts-preview-empty">No transcript segments in this range</span>
-                                )}
-                            </div>
-                        </div>
-                    )}
-
-                    <div className="wizard-nav">
-                        <button className="nav-btn back" onClick={() => goToStep(STEPS.VIDEO_OVERVIEW)}>
-                            ← Back
-                        </button>
-                        <button className="nav-btn next" onClick={() => goToStep(STEPS.MUSIC_CAPTIONS)}>
-                            Next: Music & Captions →
-                        </button>
-                    </div>
-                </div>
-            )}
-
-            {/* === STEP 4: MUSIC & CAPTIONS === */}
-            {currentStep === STEPS.MUSIC_CAPTIONS && selectedSource && (
-                <div className="wizard-panel step-music">
-                    <div className="wizard-panel-header">
-                        <h2>🎵 Music & Captions</h2>
-                        <p>Choose background music and caption style</p>
-                    </div>
-
-                    {/* Music selection */}
-                    <div className="music-section">
-                        <h3>🎶 Background Music</h3>
-                        <div className="music-grid">
-                            <div
-                                className={`music-card ${!selectedMusic ? 'selected' : ''}`}
-                                onClick={() => setSelectedMusic(null)}
-                            >
-                                <div className="music-icon">🔇</div>
-                                <div className="music-name">No Music</div>
-                            </div>
-                            {musicLibrary.map((track) => (
-                                <div
-                                    key={track.filename}
-                                    className={`music-card ${selectedMusic === track.filename ? 'selected' : ''}`}
-                                    onClick={() => setSelectedMusic(track.filename)}
-                                >
-                                    <div className="music-icon">🎵</div>
-                                    <div className="music-name">{track.label}</div>
-                                    <div className="music-file">{track.filename}</div>
-                                </div>
-                            ))}
-                        </div>
-
-                        {selectedMusic && (
-                            <div className="volume-control">
-                                <label>Volume: {Math.round(musicVolume * 100)}%</label>
-                                <input
-                                    type="range"
-                                    min={0}
-                                    max={0.5}
-                                    step={0.01}
-                                    value={musicVolume}
-                                    onChange={(e) => setMusicVolume(Number(e.target.value))}
-                                    className="volume-slider"
-                                />
-                            </div>
-                        )}
-                    </div>
-
-                    {/* Caption selection */}
-                    <div className="caption-section">
-                        <h3>💬 Captions</h3>
-                        <div className="caption-options">
-                            {[
-                                { value: 'transcript', label: '📝 From Transcript', desc: 'Auto-generated from video speech' },
-                                { value: 'llm', label: '🤖 AI Generated', desc: 'LLM creates captions from summary' },
-                                { value: 'none', label: '❌ No Captions', desc: 'Skip caption generation' },
-                            ].map(opt => (
-                                <label
-                                    key={opt.value}
-                                    className={`caption-option ${captionSource === opt.value ? 'selected' : ''}`}
-                                >
-                                    <input
-                                        type="radio"
-                                        name="captionSource"
-                                        value={opt.value}
-                                        checked={captionSource === opt.value}
-                                        onChange={(e) => setCaptionSource(e.target.value)}
-                                    />
-                                    <div className="option-content">
-                                        <div className="option-label">{opt.label}</div>
-                                        <div className="option-desc">{opt.desc}</div>
-                                    </div>
-                                </label>
-                            ))}
-                        </div>
-                    </div>
-
-                    <div className="wizard-nav">
-                        <button className="nav-btn back" onClick={() => goToStep(STEPS.EDITOR)}>
-                            ← Back
-                        </button>
-                        <button className="nav-btn next" onClick={() => goToStep(STEPS.GENERATE)}>
-                            Next: Review & Generate →
-                        </button>
-                    </div>
-                </div>
-            )}
-
-            {/* === STEP 5: REVIEW & GENERATE === */}
-            {currentStep === STEPS.GENERATE && selectedSource && (
-                <div className="wizard-panel step-generate">
-                    <div className="wizard-panel-header">
-                        <h2>🚀 Review & Generate</h2>
-                        <p>Choose your style, preview the script, then generate</p>
-                    </div>
-
-                    {/* Settings summary */}
-                    <div className="generate-summary">
-                        <div className="summary-row">
-                            <span className="summary-label">📹 Source</span>
-                            <span className="summary-value">{selectedSource.title}</span>
-                        </div>
-                        <div className="summary-row">
-                            <span className="summary-label">✂️ Trim</span>
-                            <span className="summary-value">
-                                {formatTimestamp(trimStart)} → {formatTimestamp(trimEnd)} ({formatDuration(trimEnd - trimStart)})
-                            </span>
-                        </div>
-                        <div className="summary-row">
-                            <span className="summary-label">🔊 Audio</span>
-                            <span className="summary-value">{stripAudio ? 'Original muted' : 'Keep original'}</span>
-                        </div>
-                        <div className="summary-row">
-                            <span className="summary-label">🎵 Music</span>
-                            <span className="summary-value">
-                                {selectedMusic ? `${selectedMusic} (${Math.round(musicVolume * 100)}%)` : 'None'}
-                            </span>
-                        </div>
-                        <div className="summary-row">
-                            <span className="summary-label">💬 Captions</span>
-                            <span className="summary-value">
-                                {captionSource === 'transcript' ? 'From transcript' : captionSource === 'llm' ? 'AI generated' : 'None'}
-                            </span>
-                        </div>
-                    </div>
-
-                    {/* Style options */}
-                    <div className="style-options">
-                        <div className="control-group">
-                            <label>Commentary Style</label>
-                            <select
-                                value={commentaryStyle}
-                                onChange={(e) => setCommentaryStyle(e.target.value)}
-                                className="style-select"
-                            >
-                                <option value="reaction">🎬 Reaction / Commentary</option>
-                                <option value="analysis">🔍 In-depth Analysis</option>
-                                <option value="educational">📚 Educational</option>
-                            </select>
-                        </div>
-
-                        <div className="control-group">
-                            <label>Content Type</label>
-                            <select
-                                value={contentType}
-                                onChange={(e) => setContentType(e.target.value)}
-                                className="style-select"
-                            >
-                                <option value="youtube_import">📥 YouTube Import</option>
-                                <option value="daily_update">📰 News / Daily Update</option>
-                                <option value="big_tech">🏢 Big Tech</option>
-                                <option value="book_review">📚 Book Review</option>
-                            </select>
-                        </div>
-                    </div>
-
-                    {/* Two-phase flow: Generate Script → Review → Render */}
-                    <div className="generate-action">
-                        {generationResult && generationResult.status === 'generating' ? (
-                            /* Phase 3: Video rendering started */
-                            <div className="generation-result">
-                                <div className="result-icon">✅</div>
-                                <div className="result-text">{generationResult.message}</div>
-                                <div className="result-details">
-                                    {generationResult.script_id && <span>Script #{generationResult.script_id}</span>}
-                                    {generationResult.clip_duration && <span> • {formatDuration(generationResult.clip_duration)}</span>}
-                                </div>
-                            </div>
-                        ) : scriptPreview ? (
-                            /* Phase 2: Script preview — review & approve */
-                            <div className="script-preview-panel">
-                                <div className="script-preview-header">
-                                    <h3>📜 Generated Script</h3>
-                                    {scriptPreview.catchy_title && (
-                                        <div className="script-title">"{scriptPreview.catchy_title}"</div>
-                                    )}
-                                </div>
-
-                                {scriptPreview.scenes && scriptPreview.scenes.length > 0 ? (
-                                    <div className="script-scenes">
-                                        {scriptPreview.scenes.map((scene, idx) => (
-                                            <div key={idx} className="script-scene-card">
-                                                <div className="scene-header">
-                                                    <span className="scene-number">Scene {scene.scene_number || idx + 1}</span>
-                                                    {scene.duration && (
-                                                        <span className="scene-duration">~{scene.duration}s</span>
-                                                    )}
-                                                </div>
-                                                <div className="scene-text">{scene.text}</div>
-                                                {scene.visual_direction && (
-                                                    <div className="scene-visual">📷 {scene.visual_direction}</div>
-                                                )}
-                                            </div>
-                                        ))}
-                                    </div>
-                                ) : (
-                                    <div className="script-raw-preview">
-                                        {scriptPreview.script_preview}
-                                    </div>
-                                )}
-
-                                <div className="script-preview-actions">
-                                    <button
-                                        className="nav-btn back"
-                                        onClick={() => {
-                                            setScriptPreview(null);
-                                            setGenerationResult(null);
-                                        }}
-                                    >
-                                        ↩ Regenerate Script
-                                    </button>
-                                    <button
-                                        className="generate-btn"
-                                        onClick={handleApproveAndRender}
-                                        disabled={isApproving}
-                                    >
-                                        {isApproving ? (
-                                            <><span className="loading-spinner" /> Rendering...</>
-                                        ) : (
-                                            <>🚀 Approve & Generate Video</>
-                                        )}
-                                    </button>
-                                </div>
-                            </div>
-                        ) : (
-                            /* Phase 1: Generate script */
-                            <button
-                                className="generate-btn script-btn"
-                                onClick={handleGenerateScript}
-                                disabled={isGenerating}
-                            >
-                                {isGenerating ? (
-                                    <><span className="loading-spinner" /> Generating Script...</>
-                                ) : (
-                                    <>📜 Generate Script Preview</>
-                                )}
-                            </button>
-                        )}
-                    </div>
-
-                    <div className="wizard-nav">
-                        <button className="nav-btn back" onClick={() => goToStep(STEPS.MUSIC_CAPTIONS)}>
-                            ← Back
-                        </button>
-                    </div>
-                </div>
-            )}
-        </div>
-    );
+const OUTPUT_MODES = [
+  { id: 'tts', label: '🎙️ TTS Voiceover', desc: 'AI narrates your script over the video' },
+  { id: 'text_overlay', label: '📝 Text Overlay', desc: 'Burn script text as animated overlays' },
+  { id: 'captions', label: '💬 Captions', desc: 'Subtitle-style captions at bottom' },
+  { id: 'tts_captions', label: '🎙️+💬 TTS + Captions', desc: 'Voiceover with matching captions' },
+];
+
+const ASPECT_RATIOS = [
+  { id: '16:9', label: '🖥️ 16:9', desc: 'Landscape (YouTube)' },
+  { id: '9:16', label: '📱 9:16', desc: 'Shorts / Reels' },
+  { id: '1:1', label: '⬛ 1:1', desc: 'Instagram Square' },
+];
+
+const CAPTION_FONTS = [
+  { id: 'bold', label: 'Bold' },
+  { id: 'light', label: 'Light' },
+  { id: 'cinematic', label: 'Cinematic' },
+];
+
+const CAPTION_COLORS = [
+  { id: 'white', label: 'White', hex: '#ffffff' },
+  { id: 'yellow', label: 'Yellow', hex: '#fde047' },
+  { id: 'cyan', label: 'Cyan', hex: '#22d3ee' },
+];
+
+const CAPTION_POSITIONS = [
+  { id: 'top', label: 'Top' },
+  { id: 'center', label: 'Center' },
+  { id: 'bottom', label: 'Bottom' },
+];
+
+const CAPTION_BG_STYLES = [
+  { id: 'none', label: 'None' },
+  { id: 'dark_box', label: 'Dark Box' },
+  { id: 'blurred', label: 'Blurred' },
+];
+
+function formatTime(seconds) {
+  if (!seconds || isNaN(seconds)) return '0:00';
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-export default YouTubeImport;
+export default function YouTubeImport() {
+  // ── Wizard state ──
+  const [step, setStep] = useState(1);
+
+  // ── Step 1: Import ──
+  const [url, setUrl] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [sources, setSources] = useState([]);
+  const [selectedSource, setSelectedSource] = useState(null);
+  const [videoInfo, setVideoInfo] = useState(null);
+
+  // ── Step 2: Trim ──
+  const [transcript, setTranscript] = useState(null);
+  const [summary, setSummary] = useState(null);
+  const [trimStart, setTrimStart] = useState(0);
+  const [trimEnd, setTrimEnd] = useState(60);
+  const [stripAudio, setStripAudio] = useState(false);
+  const playerRef = useRef(null);
+  const playerInstanceRef = useRef(null);
+
+  // ── Step 3: Script Studio ──
+  const [scriptData, setScriptData] = useState(null);
+  const [scriptLoading, setScriptLoading] = useState(false);
+  const [editedScenes, setEditedScenes] = useState([]);
+  const [outputMode, setOutputMode] = useState('tts');
+  const [aspectRatio, setAspectRatio] = useState('16:9');
+  const [commentaryStyle, setCommentaryStyle] = useState('reaction');
+  const [contentType, setContentType] = useState('youtube_import');
+
+  // Voice selection
+  const [voiceData, setVoiceData] = useState(null);
+  const [ttsProvider, setTtsProvider] = useState('openai');
+  const [voiceId, setVoiceId] = useState('');
+
+  // Caption styling
+  const [captionFont, setCaptionFont] = useState('bold');
+  const [captionColor, setCaptionColor] = useState('white');
+  const [captionPosition, setCaptionPosition] = useState('bottom');
+  const [captionBgStyle, setCaptionBgStyle] = useState('dark_box');
+
+  // Music
+  const [musicLibrary, setMusicLibrary] = useState([]);
+  const [musicTrack, setMusicTrack] = useState('');
+  const [musicVolume, setMusicVolume] = useState(0.12);
+
+  // ── Step 4: Generate ──
+  const [generating, setGenerating] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState('');
+
+  // ── Load sources on mount ──
+  useEffect(() => {
+    loadSources();
+  }, []);
+
+  // ── Load voices on Step 3 ──
+  useEffect(() => {
+    if (step === 3 && !voiceData) {
+      loadVoices();
+      loadMusicLibrary();
+    }
+  }, [step]);
+
+  const loadSources = async () => {
+    try {
+      const data = await getYouTubeSources();
+      setSources(data);
+    } catch {
+      /* silent */
+    }
+  };
+
+  const loadVoices = async () => {
+    try {
+      const data = await getVoices();
+      setVoiceData(data);
+      if (data.default_provider) setTtsProvider(data.default_provider);
+      if (data.providers?.length) {
+        const defaultProv = data.providers.find(p => p.id === data.default_provider);
+        if (defaultProv?.default_voice) setVoiceId(defaultProv.default_voice);
+      }
+    } catch {
+      /* Voice loading is non-critical */
+    }
+  };
+
+  const loadMusicLibrary = async () => {
+    try {
+      const data = await getMusicLibrary();
+      setMusicLibrary(data.tracks || []);
+      if (data.default_track) setMusicTrack(data.default_track);
+    } catch {
+      /* non-critical */
+    }
+  };
+
+  // ═══════════════════════════════════════════════════════════
+  // STEP 1: Smart Import
+  // ═══════════════════════════════════════════════════════════
+  const handleImport = async () => {
+    if (!url.trim()) return;
+    setLoading(true);
+    setError('');
+    setSuccess('');
+
+    try {
+      // 1) Quick metadata preview
+      const info = await getVideoInfo(url.trim());
+      setVideoInfo(info);
+
+      // 2) Analyze + download in one click
+      const result = await analyzeYouTubeVideo(url.trim());
+      setSuccess(`✓ Imported: ${result.title || info?.title || 'Video'}`);
+
+      // 3) Reload sources & select this one
+      const updatedSources = await getYouTubeSources();
+      setSources(updatedSources);
+
+      const imported = updatedSources.find(s => s.youtube_url === url.trim() || s.id === result.source_id);
+      if (imported) {
+        await selectSource(imported);
+      }
+    } catch (err) {
+      setError(err.message || 'Import failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const selectSource = async (source) => {
+    setSelectedSource(source);
+    setVideoInfo({
+      title: source.title,
+      channel_name: source.channel_name,
+      duration: source.duration_seconds,
+      thumbnail_url: source.thumbnail_url,
+      description: source.description,
+    });
+    setTrimEnd(source.duration_seconds || 60);
+
+    // Auto-load transcript and summary
+    try {
+      const detail = await getYouTubeSource(source.id);
+      setSelectedSource(detail);
+
+      const [transcriptData, summaryData] = await Promise.allSettled([
+        getTranscript(source.id),
+        getVideoSummary(source.id),
+      ]);
+
+      if (transcriptData.status === 'fulfilled') setTranscript(transcriptData.value);
+      if (summaryData.status === 'fulfilled') setSummary(summaryData.value);
+    } catch {
+      /* non-critical */
+    }
+  };
+
+  // ═══════════════════════════════════════════════════════════
+  // STEP 2: YouTube Player
+  // ═══════════════════════════════════════════════════════════
+  const initYouTubePlayer = useCallback(() => {
+    if (!selectedSource?.youtube_video_id || !playerRef.current) return;
+    if (playerInstanceRef.current) return;
+
+    if (!window.YT) {
+      const tag = document.createElement('script');
+      tag.src = 'https://www.youtube.com/iframe_api';
+      document.head.appendChild(tag);
+      window.onYouTubeIframeAPIReady = () => createPlayer();
+    } else {
+      createPlayer();
+    }
+
+    function createPlayer() {
+      playerInstanceRef.current = new window.YT.Player(playerRef.current, {
+        videoId: selectedSource.youtube_video_id,
+        playerVars: {
+          autoplay: 0, controls: 1, modestbranding: 1, rel: 0,
+          start: Math.floor(trimStart),
+        },
+      });
+    }
+  }, [selectedSource?.youtube_video_id, trimStart]);
+
+  useEffect(() => {
+    if (step === 2) initYouTubePlayer();
+  }, [step, initYouTubePlayer]);
+
+  const handleTrimFromInsight = (insight) => {
+    setTrimStart(insight.start_time);
+    setTrimEnd(insight.end_time || (insight.start_time + 60));
+    if (playerInstanceRef.current?.seekTo) {
+      playerInstanceRef.current.seekTo(insight.start_time, true);
+    }
+  };
+
+  // ═══════════════════════════════════════════════════════════
+  // STEP 3: Script Generation & Editing
+  // ═══════════════════════════════════════════════════════════
+  const handleGenerateScript = async () => {
+    if (!selectedSource) return;
+    setScriptLoading(true);
+
+    try {
+      const result = await generateScript(selectedSource.id, {
+        trimStart,
+        trimEnd,
+        commentaryStyle,
+        contentType,
+        autoApprove: false,
+      });
+
+      setScriptData(result);
+      setEditedScenes(result.scenes ? [...result.scenes] : []);
+    } catch (err) {
+      setError(err.message || 'Script generation failed');
+    } finally {
+      setScriptLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (step === 3 && selectedSource && !scriptData && !scriptLoading) {
+      handleGenerateScript();
+    }
+  }, [step]);
+
+  const updateSceneText = (index, newText) => {
+    setEditedScenes(prev => {
+      const updated = [...prev];
+      updated[index] = { ...updated[index], text: newText };
+      return updated;
+    });
+  };
+
+  // ═══════════════════════════════════════════════════════════
+  // STEP 4: Generate
+  // ═══════════════════════════════════════════════════════════
+  const handlePreview = async () => {
+    if (!selectedSource) return;
+    setPreviewLoading(true);
+    try {
+      const result = await generatePreview(selectedSource.id, {
+        trimStart, trimEnd, stripAudio, aspectRatio, outputMode,
+      });
+      // Preview URL is relative — prepend backend host
+      const backendBase = 'http://localhost:8000';
+      setPreviewUrl(`${backendBase}${result.preview_url}`);
+    } catch (err) {
+      setError(err.message || 'Preview failed');
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const handleGenerate = async () => {
+    if (!scriptData?.script_id) return;
+    setGenerating(true);
+    setError('');
+
+    try {
+      await approveAndRender(scriptData.script_id, {
+        trimStart, trimEnd, stripAudio,
+        musicTrack, musicVolume,
+        generateTts: outputMode === 'tts' || outputMode === 'tts_captions',
+        ttsProvider,
+        voiceId,
+        creditsOverlay: true,
+        aspectRatio,
+        outputMode,
+      });
+      setSuccess('🚀 Video generation started! Redirecting to validation...');
+      setTimeout(() => (window.location.href = '/videos'), 2000);
+    } catch (err) {
+      setError(err.message || 'Generation failed');
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  // ── Can proceed? ──
+  const canProceed = () => {
+    switch (step) {
+      case 1: return !!selectedSource;
+      case 2: return trimEnd > trimStart;
+      case 3: return !!scriptData;
+      case 4: return true;
+      default: return false;
+    }
+  };
+
+  const handleNextStep = () => {
+    if (canProceed() && step < 4) setStep(step + 1);
+  };
+
+  const handlePrevStep = () => {
+    if (step > 1) setStep(step - 1);
+  };
+
+  // ═══════════════════════════════════════════════════════════
+  // RENDER
+  // ═══════════════════════════════════════════════════════════
+  return (
+    <div className="youtube-import">
+      {/* ── Wizard Steps Bar ── */}
+      <div className="wizard-steps">
+        {STEPS.map(s => (
+          <div
+            key={s.id}
+            className={`wizard-step ${step === s.id ? 'active' : ''} ${step > s.id ? 'completed' : ''}`}
+            onClick={() => s.id <= step && setStep(s.id)}
+          >
+            <span className="step-number">{step > s.id ? '✓' : s.icon}</span>
+            <span>{s.label}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* ── Messages ── */}
+      {error && (
+        <div className="yt-error">
+          <span>❌ {error}</span>
+          <button className="dismiss-btn" onClick={() => setError('')}>×</button>
+        </div>
+      )}
+      {success && (
+        <div className="yt-success">
+          <span>{success}</span>
+          <button className="dismiss-btn" onClick={() => setSuccess('')}>×</button>
+        </div>
+      )}
+
+      {/* ═══ STEP 1: Smart Import ═══ */}
+      {step === 1 && (
+        <div className="wizard-panel" id="yt-step-import">
+          <div className="wizard-panel-header">
+            <span className="yt-header-icon">📥</span>
+            <div>
+              <h2>Smart Import</h2>
+              <p>Paste a YouTube, X/Twitter, or LinkedIn URL to get started</p>
+            </div>
+          </div>
+
+          {/* URL Input */}
+          <div className="yt-input-section">
+            <div className="yt-input-wrapper">
+              <span className="platform-badge">🔗</span>
+              <input
+                id="yt-url-input"
+                className="yt-url-input"
+                type="text"
+                placeholder="Paste video URL here..."
+                value={url}
+                onChange={e => setUrl(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleImport()}
+              />
+            </div>
+            <div className="url-actions">
+              <button
+                id="yt-import-btn"
+                className="yt-analyze-btn primary"
+                onClick={handleImport}
+                disabled={loading || !url.trim()}
+              >
+                {loading ? <span className="loading-spinner" /> : '📥'}
+                {loading ? 'Importing...' : 'Import & Analyze'}
+              </button>
+            </div>
+          </div>
+
+          {/* Video Info Preview (appears after paste/import) */}
+          {videoInfo && videoInfo.title && (
+            <div className="yt-video-header" style={{ marginBottom: '1.5rem' }}>
+              {videoInfo.thumbnail_url && (
+                <img src={videoInfo.thumbnail_url} alt="" className="yt-video-thumb" />
+              )}
+              <div className="yt-video-info">
+                <h2>{videoInfo.title}</h2>
+                <div className="yt-video-meta">
+                  {videoInfo.channel_name && <span className="channel-name">📺 {videoInfo.channel_name}</span>}
+                  {videoInfo.duration && <span>⏱️ {formatTime(videoInfo.duration)}</span>}
+                </div>
+                {videoInfo.description && (
+                  <p style={{
+                    marginTop: '0.75rem', fontSize: '0.85rem', lineHeight: 1.6,
+                    color: 'var(--text-secondary)', maxHeight: '4.8em', overflow: 'hidden',
+                  }}>
+                    {videoInfo.description}
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Recent Imports */}
+          <div className="recent-imports">
+            <h3>📋 Recent Imports</h3>
+            <div className="yt-source-list">
+              {sources.length === 0 ? (
+                <div className="yt-empty-state">No imports yet. Paste a URL above to get started.</div>
+              ) : (
+                sources.slice(0, 8).map(s => (
+                  <div
+                    key={s.id}
+                    className={`yt-source-card ${selectedSource?.id === s.id ? 'active' : ''}`}
+                    onClick={() => selectSource(s)}
+                  >
+                    {s.thumbnail_url && (
+                      <img src={s.thumbnail_url} alt="" className="yt-source-thumb" />
+                    )}
+                    <div className="yt-source-info">
+                      <div className="yt-source-title">{s.title || s.youtube_video_id}</div>
+                      <div className="yt-source-meta">
+                        <span className={`status-badge ${s.analysis_status}`}>{s.analysis_status}</span>
+                        {s.insights_count > 0 && (
+                          <span className="insight-count">💡 {s.insights_count} insights</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ═══ STEP 2: Trim & Preview ═══ */}
+      {step === 2 && selectedSource && (
+        <div className="wizard-panel" id="yt-step-trim">
+          <div className="wizard-panel-header">
+            <span className="yt-header-icon">✂️</span>
+            <div>
+              <h2>Trim & Preview</h2>
+              <p>Select the portion of the video you want to use</p>
+            </div>
+          </div>
+
+          {/* Video Player */}
+          <div className="editor-video-preview">
+            <div className="video-player-wrapper editor-player">
+              <div ref={playerRef} className="video-player-iframe" />
+            </div>
+            <div className="preview-trim-label">
+              Trim: {formatTime(trimStart)} → {formatTime(trimEnd)} ({formatTime(trimEnd - trimStart)})
+            </div>
+          </div>
+
+          {/* Trim Controls */}
+          <div className="editor-controls">
+            <div className="control-group">
+              <label>Start Time</label>
+              <div className="time-input-wrapper">
+                <input
+                  id="yt-trim-start"
+                  type="range"
+                  className="time-slider"
+                  min={0}
+                  max={selectedSource.duration_seconds || 300}
+                  step={1}
+                  value={trimStart}
+                  onChange={e => {
+                    const v = parseFloat(e.target.value);
+                    setTrimStart(Math.min(v, trimEnd - 5));
+                  }}
+                />
+                <span className="time-display">{formatTime(trimStart)}</span>
+              </div>
+            </div>
+            <div className="control-group">
+              <label>End Time</label>
+              <div className="time-input-wrapper">
+                <input
+                  id="yt-trim-end"
+                  type="range"
+                  className="time-slider"
+                  min={0}
+                  max={selectedSource.duration_seconds || 300}
+                  step={1}
+                  value={trimEnd}
+                  onChange={e => {
+                    const v = parseFloat(e.target.value);
+                    setTrimEnd(Math.max(v, trimStart + 5));
+                  }}
+                />
+                <span className="time-display">{formatTime(trimEnd)}</span>
+              </div>
+            </div>
+            <div className="clip-info">
+              <label>Audio</label>
+              <label id="yt-strip-audio-toggle" style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={stripAudio}
+                  onChange={e => setStripAudio(e.target.checked)}
+                />
+                <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                  Mute original audio
+                </span>
+              </label>
+            </div>
+          </div>
+
+          {/* Two-column: Transcript + Smart Trim Suggestions */}
+          <div className="overview-columns">
+            {/* Transcript */}
+            <div className="overview-panel">
+              <h3>📝 Transcript</h3>
+              {!transcript ? (
+                <div className="panel-loading">
+                  <span className="loading-spinner" /> Loading transcript...
+                </div>
+              ) : transcript.segments?.length > 0 ? (
+                <div className="transcript-scroll">
+                  {transcript.segments.map((seg, i) => {
+                    const inRange = seg.start >= trimStart && seg.end <= trimEnd;
+                    return (
+                      <div
+                        key={i}
+                        className="transcript-segment"
+                        style={inRange ? { background: 'var(--color-primary-soft)' } : {}}
+                        onClick={() => {
+                          setTrimStart(seg.start);
+                          if (playerInstanceRef.current?.seekTo) {
+                            playerInstanceRef.current.seekTo(seg.start, true);
+                          }
+                        }}
+                      >
+                        <span className="ts-time">{formatTime(seg.start)}</span>
+                        <span className="ts-text">{seg.text}</span>
+                      </div>
+                    );
+                  })}
+                  {transcript.transcript_source && (
+                    <div className="transcript-source-tag">
+                      Source: {transcript.transcript_source}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="panel-empty">No transcript available. AI will analyze the video visually.</div>
+              )}
+            </div>
+
+            {/* Smart Trim Suggestions (from insights) */}
+            <div className="overview-panel">
+              <h3>💡 Smart Trim Suggestions</h3>
+              {selectedSource.insights?.length > 0 ? (
+                <div className="insights-grid" style={{ gridTemplateColumns: '1fr' }}>
+                  {selectedSource.insights.map((insight, i) => (
+                    <div
+                      key={i}
+                      className="insight-mini-card"
+                      onClick={() => handleTrimFromInsight(insight)}
+                    >
+                      <div className="insight-mini-time">
+                        ⏱ {formatTime(insight.start_time)}–{formatTime(insight.end_time)}
+                        {insight.viral_score && (
+                          <span style={{ marginLeft: '0.5rem', color: 'var(--color-warning)' }}>
+                            🔥 {insight.viral_score}/10
+                          </span>
+                        )}
+                      </div>
+                      <div className="insight-mini-summary">{insight.summary}</div>
+                    </div>
+                  ))}
+                </div>
+              ) : summary?.video_summary ? (
+                <div className="summary-text-block">{summary.video_summary}</div>
+              ) : (
+                <div className="panel-empty">
+                  Insights will appear after analysis completes.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ═══ STEP 3: Script Studio ═══ */}
+      {step === 3 && selectedSource && (
+        <div className="wizard-panel" id="yt-step-script">
+          <div className="wizard-panel-header">
+            <span className="yt-header-icon">🎬</span>
+            <div>
+              <h2>Script Studio</h2>
+              <p>Review, edit, and customize your video output</p>
+            </div>
+          </div>
+
+          {/* Script Scenes — Inline Editing */}
+          <div className="overview-panel" style={{ marginBottom: '1.5rem' }}>
+            <h3 style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              📜 Script
+              <button
+                className="yt-analyze-btn secondary"
+                style={{ fontSize: '0.75rem', padding: '0.4rem 0.8rem' }}
+                onClick={handleGenerateScript}
+                disabled={scriptLoading}
+              >
+                {scriptLoading ? <span className="loading-spinner" /> : '🔄'} Regenerate
+              </button>
+            </h3>
+
+            {scriptLoading ? (
+              <div className="yt-analyzing-state">
+                <div className="analyzing-animation">
+                  <div className="brain-icon">🧠</div>
+                  <div className="analyzing-text">Generating script...</div>
+                  <div className="analyzing-subtext">Using title, description, transcript & AI analysis</div>
+                </div>
+              </div>
+            ) : scriptData?.catchy_title ? (
+              <div>
+                <input
+                  id="yt-script-title"
+                  type="text"
+                  value={scriptData.catchy_title}
+                  onChange={e => setScriptData(prev => ({ ...prev, catchy_title: e.target.value }))}
+                  style={{
+                    width: '100%', padding: '0.8rem 1rem', fontSize: '1.1rem', fontWeight: 700,
+                    background: 'var(--surface-page)', border: '1px solid var(--border-card)',
+                    borderRadius: '10px', color: 'var(--text-heading)', marginBottom: '1rem',
+                  }}
+                />
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                  {editedScenes.map((scene, i) => (
+                    <div key={i} style={{
+                      display: 'flex', gap: '0.75rem', padding: '0.6rem',
+                      background: 'var(--surface-page)', border: '1px solid var(--border-card)',
+                      borderRadius: '8px',
+                    }}>
+                      <span style={{
+                        minWidth: '28px', height: '28px', borderRadius: '50%',
+                        background: 'var(--gradient-indigo)', display: 'flex',
+                        alignItems: 'center', justifyContent: 'center',
+                        fontSize: '0.75rem', fontWeight: 700, color: '#fff', flexShrink: 0,
+                      }}>{i + 1}</span>
+                      <textarea
+                        id={`yt-scene-${i}`}
+                        value={scene.text || ''}
+                        onChange={e => updateSceneText(i, e.target.value)}
+                        rows={2}
+                        style={{
+                          flex: 1, background: 'transparent', border: 'none',
+                          color: 'var(--text-secondary)', fontSize: '0.85rem',
+                          lineHeight: 1.5, resize: 'vertical', outline: 'none',
+                          fontFamily: 'inherit',
+                        }}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="panel-empty">Click "Regenerate" to create a script.</div>
+            )}
+          </div>
+
+          {/* Output Mode + Aspect Ratio */}
+          <div className="overview-columns">
+            {/* Output Mode Picker */}
+            <div className="overview-panel">
+              <h3>🎛️ Output Mode</h3>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                {OUTPUT_MODES.map(mode => (
+                  <div
+                    key={mode.id}
+                    id={`yt-mode-${mode.id}`}
+                    className={`insight-mini-card ${outputMode === mode.id ? 'active' : ''}`}
+                    onClick={() => setOutputMode(mode.id)}
+                    style={outputMode === mode.id ? {
+                      borderColor: 'var(--color-primary)', background: 'var(--color-primary-soft)',
+                    } : {}}
+                  >
+                    <div style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-primary)' }}>
+                      {mode.label}
+                    </div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
+                      {mode.desc}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Aspect Ratio */}
+            <div className="overview-panel">
+              <h3>📐 Aspect Ratio</h3>
+              <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
+                {ASPECT_RATIOS.map(ar => (
+                  <div
+                    key={ar.id}
+                    id={`yt-ar-${ar.id.replace(':', '')}`}
+                    className="insight-mini-card"
+                    onClick={() => setAspectRatio(ar.id)}
+                    style={{
+                      flex: 1, textAlign: 'center', cursor: 'pointer',
+                      ...(aspectRatio === ar.id ? {
+                        borderColor: 'var(--color-primary)', background: 'var(--color-primary-soft)',
+                      } : {}),
+                    }}
+                  >
+                    <div style={{ fontSize: '1.5rem', marginBottom: '0.3rem' }}>{ar.label.split(' ')[0]}</div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{ar.desc}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Commentary Style */}
+              <h3 style={{ marginTop: '1rem' }}>🎨 Commentary Style</h3>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                {['reaction', 'analysis', 'educational'].map(style => (
+                  <button
+                    key={style}
+                    className={`yt-analyze-btn ${commentaryStyle === style ? 'primary' : 'secondary'}`}
+                    style={{ fontSize: '0.75rem', padding: '0.4rem 0.8rem', flex: 1 }}
+                    onClick={() => setCommentaryStyle(style)}
+                  >
+                    {style.charAt(0).toUpperCase() + style.slice(1)}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Voice Selector (only when TTS mode) */}
+          {(outputMode === 'tts' || outputMode === 'tts_captions') && voiceData && (
+            <div className="overview-panel" style={{ marginTop: '1rem' }}>
+              <h3>🎙️ Voice Selection</h3>
+              <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start' }}>
+                {/* Provider Tabs */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem', minWidth: '120px' }}>
+                  {voiceData.providers?.map(prov => (
+                    <button
+                      key={prov.id}
+                      className={`yt-analyze-btn ${ttsProvider === prov.id ? 'primary' : 'secondary'}`}
+                      style={{ fontSize: '0.75rem', padding: '0.5rem 0.8rem', textAlign: 'left' }}
+                      onClick={() => {
+                        setTtsProvider(prov.id);
+                        setVoiceId(prov.default_voice || '');
+                      }}
+                    >
+                      {prov.name}
+                      <span style={{ display: 'block', fontSize: '0.65rem', opacity: 0.7 }}>
+                        {prov.cost_label}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+
+                {/* Voice Dropdown */}
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '0.5rem' }}>
+                    {voiceData.voices?.[ttsProvider]?.map(voice => (
+                      <div
+                        key={voice.id}
+                        className="insight-mini-card"
+                        onClick={() => setVoiceId(voice.id)}
+                        style={voiceId === voice.id ? {
+                          borderColor: 'var(--color-primary)', background: 'var(--color-primary-soft)',
+                        } : { cursor: 'pointer' }}
+                      >
+                        <div style={{ fontWeight: 600, fontSize: '0.85rem', color: 'var(--text-primary)' }}>
+                          {voice.name}
+                        </div>
+                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{voice.tone}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Caption Styling (only when caption mode) */}
+          {(outputMode === 'captions' || outputMode === 'tts_captions') && (
+            <div className="overview-panel" style={{ marginTop: '1rem' }}>
+              <h3>💬 Caption Styling</h3>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1rem' }}>
+                <div>
+                  <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.3rem', display: 'block' }}>Font</label>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+                    {CAPTION_FONTS.map(f => (
+                      <button key={f.id}
+                        className={`yt-analyze-btn ${captionFont === f.id ? 'primary' : 'secondary'}`}
+                        style={{ fontSize: '0.7rem', padding: '0.3rem 0.5rem' }}
+                        onClick={() => setCaptionFont(f.id)}
+                      >{f.label}</button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.3rem', display: 'block' }}>Color</label>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+                    {CAPTION_COLORS.map(c => (
+                      <button key={c.id}
+                        className={`yt-analyze-btn ${captionColor === c.id ? 'primary' : 'secondary'}`}
+                        style={{ fontSize: '0.7rem', padding: '0.3rem 0.5rem' }}
+                        onClick={() => setCaptionColor(c.id)}
+                      >
+                        <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: '50%', background: c.hex, marginRight: 4 }} />
+                        {c.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.3rem', display: 'block' }}>Position</label>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+                    {CAPTION_POSITIONS.map(p => (
+                      <button key={p.id}
+                        className={`yt-analyze-btn ${captionPosition === p.id ? 'primary' : 'secondary'}`}
+                        style={{ fontSize: '0.7rem', padding: '0.3rem 0.5rem' }}
+                        onClick={() => setCaptionPosition(p.id)}
+                      >{p.label}</button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.3rem', display: 'block' }}>Background</label>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+                    {CAPTION_BG_STYLES.map(bg => (
+                      <button key={bg.id}
+                        className={`yt-analyze-btn ${captionBgStyle === bg.id ? 'primary' : 'secondary'}`}
+                        style={{ fontSize: '0.7rem', padding: '0.3rem 0.5rem' }}
+                        onClick={() => setCaptionBgStyle(bg.id)}
+                      >{bg.label}</button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Background Music */}
+          <div className="overview-panel" style={{ marginTop: '1rem' }}>
+            <h3>🎵 Background Music</h3>
+            <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+              <select
+                id="yt-music-select"
+                value={musicTrack}
+                onChange={e => setMusicTrack(e.target.value)}
+                style={{
+                  flex: 1, padding: '0.6rem 0.8rem', background: 'var(--surface-page)',
+                  border: '1px solid var(--border-card)', borderRadius: '8px',
+                  color: 'var(--text-primary)', fontSize: '0.85rem',
+                }}
+              >
+                <option value="">None</option>
+                {musicLibrary.map(track => (
+                  <option key={track.filename} value={track.filename}>
+                    {track.label} ({track.content_type})
+                  </option>
+                ))}
+              </select>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: '180px' }}>
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Vol</span>
+                <input
+                  type="range"
+                  min={0} max={1} step={0.01}
+                  value={musicVolume}
+                  onChange={e => setMusicVolume(parseFloat(e.target.value))}
+                  className="time-slider"
+                  style={{ flex: 1 }}
+                />
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', minWidth: '30px' }}>
+                  {Math.round(musicVolume * 100)}%
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ═══ STEP 4: Generate ═══ */}
+      {step === 4 && selectedSource && (
+        <div className="wizard-panel" id="yt-step-generate">
+          <div className="wizard-panel-header">
+            <span className="yt-header-icon">🚀</span>
+            <div>
+              <h2>Generate Video</h2>
+              <p>Review your settings and generate</p>
+            </div>
+          </div>
+
+          {/* Settings Summary */}
+          <div className="overview-columns">
+            <div className="overview-panel">
+              <h3>📋 Settings Summary</h3>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem', fontSize: '0.85rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>Source</span>
+                  <span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>
+                    {selectedSource.title?.slice(0, 40) || 'Video'}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>Trim</span>
+                  <span style={{ color: 'var(--color-primary-light)', fontFamily: 'var(--font-mono)' }}>
+                    {formatTime(trimStart)} → {formatTime(trimEnd)}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>Output Mode</span>
+                  <span style={{ color: 'var(--text-primary)' }}>
+                    {OUTPUT_MODES.find(m => m.id === outputMode)?.label}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>Aspect Ratio</span>
+                  <span style={{ color: 'var(--text-primary)' }}>{aspectRatio}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>Audio</span>
+                  <span style={{ color: 'var(--text-primary)' }}>
+                    {stripAudio ? 'Muted' : 'Original kept'}
+                  </span>
+                </div>
+                {(outputMode === 'tts' || outputMode === 'tts_captions') && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'var(--text-muted)' }}>Voice</span>
+                    <span style={{ color: 'var(--text-primary)' }}>
+                      {ttsProvider} / {voiceId}
+                    </span>
+                  </div>
+                )}
+                {musicTrack && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'var(--text-muted)' }}>Music</span>
+                    <span style={{ color: 'var(--text-primary)' }}>
+                      {musicTrack} ({Math.round(musicVolume * 100)}%)
+                    </span>
+                  </div>
+                )}
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>Script</span>
+                  <span style={{ color: 'var(--text-primary)' }}>
+                    {editedScenes.length} scenes • {commentaryStyle}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Preview Panel */}
+            <div className="overview-panel">
+              <h3>🎬 Preview</h3>
+              {previewUrl ? (
+                <video
+                  src={previewUrl}
+                  controls
+                  style={{ width: '100%', borderRadius: '8px', marginBottom: '0.5rem' }}
+                />
+              ) : (
+                <div style={{ textAlign: 'center', padding: '2rem 1rem' }}>
+                  <button
+                    id="yt-preview-btn"
+                    className="yt-analyze-btn primary"
+                    onClick={handlePreview}
+                    disabled={previewLoading}
+                  >
+                    {previewLoading ? <span className="loading-spinner" /> : '🎬'}
+                    {previewLoading ? 'Generating preview...' : 'Generate 5s Preview'}
+                  </button>
+                  <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>
+                    Quick preview with overlays applied
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Generate Button */}
+          <div style={{ textAlign: 'center', marginTop: '2rem' }}>
+            <button
+              id="yt-generate-btn"
+              className="yt-analyze-btn primary"
+              onClick={handleGenerate}
+              disabled={generating || !scriptData}
+              style={{ padding: '1rem 3rem', fontSize: '1.1rem', borderRadius: '14px' }}
+            >
+              {generating ? <span className="loading-spinner" /> : '🚀'}
+              {generating ? ' Generating video...' : ' Generate Video'}
+            </button>
+            {generating && (
+              <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>
+                This may take a few minutes. You'll be redirected to Video Validation when ready.
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Wizard Navigation ── */}
+      <div className="wizard-nav">
+        <button
+          className="nav-btn back"
+          onClick={handlePrevStep}
+          disabled={step === 1}
+          style={step === 1 ? { visibility: 'hidden' } : {}}
+        >
+          ← Back
+        </button>
+        {step < 4 ? (
+          <button
+            id="yt-next-btn"
+            className="nav-btn next"
+            onClick={handleNextStep}
+            disabled={!canProceed()}
+          >
+            Next →
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}

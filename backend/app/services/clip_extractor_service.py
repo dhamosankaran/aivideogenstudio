@@ -111,7 +111,6 @@ class ClipExtractorService:
         # Format: download best quality up to 1080p, trim to section
         cmd = [
             "yt-dlp",
-            "--js-runtime", "node",
             "--format", "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
             "--merge-output-format", "mp4",
             "--download-sections", f"*{start_time}-{end_time}",
@@ -172,7 +171,6 @@ class ClipExtractorService:
             # Step 1: Get direct stream URLs for video and audio
             cmd_get_url = [
                 "yt-dlp",
-                "--js-runtime", "node",
                 "-g",
                 "--format", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]",
                 "--no-playlist",

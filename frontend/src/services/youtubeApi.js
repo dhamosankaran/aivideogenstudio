@@ -268,6 +268,34 @@ export async function getTranscript(sourceId) {
 }
 
 /**
+ * Generate Gemini captions from a video fragment.
+ * @param {number} sourceId - YouTubeSource ID
+ * @param {number} trimStart - Trim start time
+ * @param {number} trimEnd - Trim end time
+ * @returns {Promise<Object>} Transcript response
+ */
+export async function generateGeminiCaptions(sourceId, trimStart, trimEnd) {
+    const response = await fetch(
+        `${API_BASE}/api/youtube/sources/${sourceId}/gemini-captions`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                trim_start: trimStart,
+                trim_end: trimEnd
+            })
+        }
+    );
+
+    if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to generate Gemini captions');
+    }
+
+    return response.json();
+}
+
+/**
  * Get the music library (available tracks).
  * @returns {Promise<Object>} Music library with tracks list
  */
@@ -364,9 +392,21 @@ export async function approveAndRender(scriptId, editorSettings = {}) {
         trim_end: editorSettings.trimEnd ?? 60,
         strip_audio: editorSettings.stripAudio ?? true,
         music_volume: editorSettings.musicVolume ?? 0.12,
+        generate_tts: editorSettings.generateTts ?? false,
+        tts_provider: editorSettings.ttsProvider ?? 'openai',
+        credits_overlay: editorSettings.creditsOverlay ?? false,
     });
     if (editorSettings.musicTrack) {
         params.set('music_track', editorSettings.musicTrack);
+    }
+    if (editorSettings.voiceId) {
+        params.set('voice_id', editorSettings.voiceId);
+    }
+    if (editorSettings.aspectRatio) {
+        params.set('aspect_ratio', editorSettings.aspectRatio);
+    }
+    if (editorSettings.outputMode) {
+        params.set('output_mode', editorSettings.outputMode);
     }
 
     const response = await fetch(
@@ -381,3 +421,50 @@ export async function approveAndRender(scriptId, editorSettings = {}) {
 
     return response.json();
 }
+
+
+// ── Phase 4: Enhanced Flow APIs ──────────────────────────────
+
+/**
+ * Get available TTS voices grouped by provider.
+ */
+export async function getVoices() {
+    const response = await fetch(`${API_BASE}/api/youtube/voices`);
+
+    if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to fetch voices');
+    }
+
+    return response.json();
+}
+
+
+/**
+ * Generate a short preview clip with overlays applied.
+ */
+export async function generatePreview(sourceId, options = {}) {
+    const response = await fetch(
+        `${API_BASE}/api/youtube/sources/${sourceId}/preview`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                trim_start: options.trimStart ?? 0,
+                trim_end: options.trimEnd ?? 60,
+                strip_audio: options.stripAudio ?? false,
+                aspect_ratio: options.aspectRatio ?? '16:9',
+                output_mode: options.outputMode ?? 'tts',
+                caption_source: options.captionSource ?? 'transcript',
+            }),
+        }
+    );
+
+    if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to generate preview');
+    }
+
+    return response.json();
+}
+

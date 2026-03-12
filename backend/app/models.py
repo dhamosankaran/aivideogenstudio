@@ -267,6 +267,7 @@ class YouTubeSource(Base):
     channel_url = Column(String, nullable=True)
     duration_seconds = Column(Float, nullable=True)
     thumbnail_url = Column(String, nullable=True)
+    description = Column(Text, nullable=True)  # Video description from YouTube
     
     # Multi-platform support (Phase 3)
     platform = Column(String, default="youtube")  # youtube, twitter, linkedin

@@ -166,14 +166,26 @@ class EnhancedVideoCompositionService:
             output_filename = f"video_{video.id}_{start_time.strftime('%Y%m%d_%H%M%S')}.mp4"
             output_path = self.VIDEO_DIR / output_filename
             
-            # Check if script has scenes
-            if script.scenes and len(script.scenes) > 0:
+            # Check if this is a Mode A (Clip + Commentary) render
+            render_settings = video.render_settings or {}
+            clip_path = render_settings.get('clip_path')
+            is_mode_a = render_settings.get('mode') == 'A' and clip_path
+
+            if is_mode_a:
+                logger.info(f"[Mode A] Clip+Commentary render using: {clip_path}")
+                self._compose_mode_a_video(
+                    script=script,
+                    audio_path=Path(audio.file_path),
+                    clip_path=Path(clip_path),
+                    output_path=output_path,
+                )
+            elif script.scenes and len(script.scenes) > 0:
                 logger.info(f"Using scene-based composition ({len(script.scenes)} scenes)")
                 self._compose_scene_based_video(
                     script=script,
                     audio_path=Path(audio.file_path),
                     output_path=output_path,
-                    settings=video.render_settings or {}
+                    settings=render_settings
                 )
             else:
                 logger.info("No scenes found, using legacy composition")
@@ -181,7 +193,7 @@ class EnhancedVideoCompositionService:
                     script=script,
                     audio_path=Path(audio.file_path),
                     output_path=output_path,
-                    settings=video.render_settings or {}
+                    settings=render_settings
                 )
             
             # Update Record
@@ -198,48 +210,53 @@ class EnhancedVideoCompositionService:
             logger.info(f"Render complete for Video {video_id}")
             
             # === Best-effort: auto-generate SEO metadata ===
+            # Runs in a separate thread with its own event loop to avoid conflicts
+            # with the FastAPI event loop when called from an async background task.
             try:
                 import asyncio
+                import concurrent.futures
                 from app.services.metadata_generation_service import MetadataGenerationService
                 
                 article = script.article if script else None
                 if article:
-                    meta_service = MetadataGenerationService()
-                    
-                    # Extract book metadata if applicable
+                    content_type = script.content_type or "daily_update"
                     book_author = None
                     takeaways = None
-                    content_type = script.content_type or "daily_update"
-                    
                     if content_type == "book_review" and article.book_source_id:
                         book = article.book_source
                         if book:
                             book_author = book.author
                             takeaways = book.key_takeaways
-                    
-                    # Get script text for context
                     script_text = None
                     if script.scenes:
                         script_text = " ".join(s.get("text", "") for s in script.scenes)
-                    
-                    # Run async metadata generation with 30s timeout
-                    loop = asyncio.new_event_loop()
-                    metadata = loop.run_until_complete(
-                        asyncio.wait_for(
-                            meta_service.generate_metadata(
-                                article_title=article.title,
-                                article_description=article.description or article.summary or "",
-                                script_content=script_text,
-                                content_type=content_type,
-                                book_author=book_author,
-                                takeaways=takeaways,
-                            ),
-                            timeout=30.0  # 30s — only trigger fallback on true outage
-                        )
-                    )
-                    loop.close()
-                    
-                    # Persist to video record
+
+                    def _run_metadata():
+                        """Run in a thread with its own fresh event loop — safe from any context."""
+                        _loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(_loop)
+                        try:
+                            _svc = MetadataGenerationService()
+                            return _loop.run_until_complete(
+                                asyncio.wait_for(
+                                    _svc.generate_metadata(
+                                        article_title=article.title,
+                                        article_description=article.description or article.summary or "",
+                                        script_content=script_text,
+                                        content_type=content_type,
+                                        book_author=book_author,
+                                        takeaways=takeaways,
+                                    ),
+                                    timeout=30.0,
+                                )
+                            )
+                        finally:
+                            _loop.close()
+
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                        future = executor.submit(_run_metadata)
+                        metadata = future.result(timeout=35)
+
                     video.youtube_title = metadata.title[:100]
                     video.youtube_description = metadata.description[:5000]
                     video.youtube_tags = metadata.tags
@@ -2296,6 +2313,134 @@ class EnhancedVideoCompositionService:
         except Exception as e:
             logger.warning(f"[Callout] Failed to create kinetic callout for '{callout_text}': {e}")
             return None
+
+    def _compose_mode_a_video(
+        self,
+        script: Script,
+        audio_path: Optional[Path],   # TTS audio — used ONLY for Whisper word timing
+        clip_path: Path,
+        output_path: Path,
+    ):
+        """
+        Mode A: Clip + Commentary composition.
+
+        The clip already contains the final audio track (TTS + background music)
+        overlaid by the approve-and-render step.  This method:
+          1. Loads the processed clip as background (full resolution, original audio kept).
+          2. Runs Whisper on the TTS audio file to get per-word timings.
+          3. Burns word-level subtitle TextClips on top.
+          4. Appends a 4-second end screen.
+          5. Writes the output video.
+
+        audio_path is ONLY used for Whisper timing — the clip's own audio is preserved.
+        If audio_path is None (no TTS), the video is assembled without subtitles.
+        """
+        import subprocess
+
+        def _resolve(p: Path) -> Path:
+            if p.exists():
+                return p
+            full = Path.cwd() / p
+            if full.exists():
+                return full
+            raise FileNotFoundError(f"File not found: {p}")
+
+        clip_path = _resolve(clip_path)
+        if audio_path:
+            try:
+                audio_path = _resolve(audio_path)
+            except FileNotFoundError:
+                logger.warning(f"[Mode A] TTS audio not found, skipping subtitles: {audio_path}")
+                audio_path = None
+
+        logger.info(f"[Mode A] Clip: {clip_path}")
+        logger.info(f"[Mode A] TTS audio (for Whisper only): {audio_path or 'None'}")
+
+        # --- detect clip resolution ---
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height",
+             "-of", "csv=p=0", str(clip_path)],
+            capture_output=True, text=True
+        )
+        try:
+            w_str, h_str = probe.stdout.strip().split(",")
+            w, h = int(w_str), int(h_str)
+        except Exception:
+            w, h = 1080, 1920
+        logger.info(f"[Mode A] Clip resolution: {w}x{h}")
+
+        # --- load the clip (keep its audio as-is) ---
+        clip     = VideoFileClip(str(clip_path))
+        duration = clip.duration
+
+        # --- sentence-level subtitles (book review style) ---
+        subtitle_clips = []
+        if audio_path:
+            try:
+                logger.info("[Mode A] Running Whisper on TTS audio for professional subtitles...")
+                timing_data = self.whisper.transcribe_audio(audio_path)
+                all_words   = timing_data.get("words", [])
+                all_segments = timing_data.get("segments", [])
+                logger.info(f"[Mode A] {len(all_words)} words and {len(all_segments)} segments extracted")
+
+                # Use the same professional subtitle generator as book reviews
+                # Mode A is typically 16:9 or 9:16, _create_sentence_subtitles handles both
+                subtitle_clips = self._create_sentence_subtitles(
+                    words=all_words,
+                    segments=all_segments,
+                    video_size=(w, h),
+                    interrupt_times=[], # No visual interrupts in Mode A yet
+                    is_daily_digest=False # Standard lower-third position
+                )
+
+                logger.info(f"[Mode A] Built {len(subtitle_clips)} sentence-level subtitle clips")
+            except Exception as e:
+                logger.warning(f"[Mode A] Whisper/subtitles failed: {e}")
+
+        # --- composite: clip (with its original audio) + subtitles ---
+        if subtitle_clips:
+            layers = [clip] + subtitle_clips
+            final  = CompositeVideoClip(layers, size=(w, h))
+            # IMPORTANT: keep the clip's original audio (TTS+music already baked in)
+            final  = final.with_audio(clip.audio)
+        else:
+            final = clip
+
+        # --- append end screen ---
+        try:
+            content_type     = getattr(script, "content_type", "youtube_import") or "youtube_import"
+            # FIX: correct method name is generate_end_screen
+            end_screen_path  = self.end_screen_service.generate_end_screen(content_type)
+            if end_screen_path and Path(end_screen_path).exists():
+                end_clip = (
+                    ImageClip(str(end_screen_path))
+                    .with_duration(4)
+                    .resized((w, h))
+                )
+                final = concatenate_videoclips([final, end_clip], method="compose")
+                logger.info("[Mode A] End screen appended (4s)")
+        except Exception as e:
+            logger.warning(f"[Mode A] End screen skipped: {e}")
+
+        # --- write output ---
+        logger.info(f"[Mode A] Writing to {output_path}")
+        final.write_videofile(
+            str(output_path),
+            fps=30,
+            codec="libx264",
+            audio_codec="aac",
+            preset="fast",
+            threads=4,
+            logger=None,
+        )
+        clip.close()
+        try:
+            final.close()
+        except Exception:
+            pass
+        logger.info("[Mode A] ✅ Compose complete")
+
 
     def _compose_simple_video(
         self,

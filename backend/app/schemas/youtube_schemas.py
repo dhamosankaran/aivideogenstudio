@@ -46,6 +46,7 @@ class YouTubeSourceResponse(BaseModel):
     channel_url: Optional[str] = None
     duration_seconds: Optional[float] = None
     thumbnail_url: Optional[str] = None
+    description: Optional[str] = None
     analysis_status: str
     error_message: Optional[str] = None
     insights_count: int = 0
@@ -82,6 +83,7 @@ class YouTubeSourceDetailResponse(BaseModel):
     channel_url: Optional[str] = None
     duration_seconds: Optional[float] = None
     thumbnail_url: Optional[str] = None
+    description: Optional[str] = None
     analysis_status: str
     error_message: Optional[str] = None
     insights: List[InsightResponse] = []
@@ -231,6 +233,14 @@ class EditorMusicRequest(BaseModel):
     volume: float = Field(default=0.12, description="Music volume (0.0-1.0)")
 
 
+class CaptionStyleRequest(BaseModel):
+    """Caption styling options."""
+    font: str = Field(default="bold", description="Font style: bold, light, cinematic")
+    color: str = Field(default="white", description="Text color: white, yellow, cyan")
+    position: str = Field(default="bottom", description="Position: top, center, bottom")
+    bg_style: str = Field(default="dark_box", description="Background: none, dark_box, blurred")
+
+
 class EditorGenerateRequest(BaseModel):
     """Full editor generation request with all options."""
     trim_start: Optional[float] = Field(None, description="Trim start time in seconds")
@@ -243,6 +253,11 @@ class EditorGenerateRequest(BaseModel):
     commentary_style: str = Field(default="reaction", description="Script style: reaction, analysis, educational")
     auto_approve: bool = Field(default=True, description="Auto-approve and start video generation")
     content_type: str = Field(default="youtube_import", description="Content type for styling")
+    # Enhanced fields
+    aspect_ratio: str = Field(default="16:9", description="Output aspect ratio: 16:9, 9:16, 1:1")
+    caption_style: Optional[CaptionStyleRequest] = Field(None, description="Caption styling options")
+    voice_id: Optional[str] = Field(None, description="Selected voice ID for TTS")
+    output_mode: str = Field(default="tts", description="Output mode: tts, text_overlay, captions, tts_captions")
 
 
 class EditorGenerateResponse(BaseModel):
@@ -273,5 +288,26 @@ class MusicLibraryResponse(BaseModel):
     """Response containing available music tracks."""
     tracks: List[MusicTrackResponse] = []
     default_track: str = "Tech.mp3"
+
+
+class VoiceOption(BaseModel):
+    """A single voice option."""
+    id: str
+    name: str
+    tone: str
+
+
+class VoiceListResponse(BaseModel):
+    """Response containing available voices grouped by provider."""
+    default_provider: str = "openai"
+    providers: List[dict] = []
+    voices: dict = {}
+
+
+class PreviewResponse(BaseModel):
+    """Response for a generated preview clip."""
+    preview_url: str
+    duration: float
+    source_id: int
 
 

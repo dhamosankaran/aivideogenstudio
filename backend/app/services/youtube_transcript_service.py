@@ -201,7 +201,7 @@ class YouTubeTranscriptService:
         if not source:
             raise ValueError(f"YouTubeSource not found: {youtube_source_id}")
         
-        if not source.transcript:
+        if not source.transcript and not source.transcript_segments:
             raise ValueError("No transcript available for analysis")
         
         # Update status
@@ -210,7 +210,7 @@ class YouTubeTranscriptService:
         
         try:
             # Build full transcript text with timestamps
-            transcript_text = self._build_transcript_text(source.transcript)
+            transcript_text = self._get_best_transcript_text(source)
             
             # Truncate transcript if too long to prevent oversized prompts
             # Keep first 15000 chars (roughly 10-15 minutes of content)
@@ -328,15 +328,14 @@ class YouTubeTranscriptService:
             logger.info(f"Returning cached summary for source {youtube_source_id}")
             return source.video_summary
         
-        if not source.transcript:
+        # Try to build transcript text from available sources
+        transcript_text = self._get_best_transcript_text(source)
+        if not transcript_text:
             raise ValueError("No transcript available for summary generation")
         
         logger.info(f"Generating video summary for source {youtube_source_id}")
         
         try:
-            # Build full transcript text
-            transcript_text = self._build_transcript_text(source.transcript)
-            
             # Truncate if too long (keep first 8000 chars for context)
             if len(transcript_text) > 8000:
                 transcript_text = transcript_text[:8000] + "\n...[transcript truncated]"
@@ -415,7 +414,22 @@ CRITICAL RULES:
 
 
     
-    def _build_transcript_text(self, transcript: List[Dict]) -> str:
+    def _get_best_transcript_text(self, source) -> str:
+        """Get transcript text, preferring standard transcript, falling back to transcript_segments."""
+        if source.transcript:
+            return self._build_transcript_text(source.transcript)
+        if source.transcript_segments:
+            # transcript_segments uses {text, start, end} format
+            lines = []
+            for seg in source.transcript_segments:
+                time = self._format_timestamp(seg.get('start', 0))
+                text = seg.get('text', '')
+                if text:
+                    lines.append(f"[{time}] {text}")
+            return "\n".join(lines)
+        return ""
+
+    def _build_transcript_text(self, transcript) -> str:
         """Build formatted transcript text with timestamps."""
         lines = []
         for segment in transcript:
