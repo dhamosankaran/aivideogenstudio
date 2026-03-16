@@ -258,6 +258,16 @@ class EditorGenerateRequest(BaseModel):
     caption_style: Optional[CaptionStyleRequest] = Field(None, description="Caption styling options")
     voice_id: Optional[str] = Field(None, description="Selected voice ID for TTS")
     output_mode: str = Field(default="tts", description="Output mode: tts, text_overlay, captions, tts_captions")
+    # Multi-trim: indices into YouTubeSource.insights to concatenate
+    selected_insights: Optional[List[int]] = Field(None, description="Insight indices to concatenate (multi-trim)")
+    # Branding: company name for hook generation
+    company_name: Optional[str] = Field(None, description="Company/brand name to feature in the hook")
+    # Target duration: overrides clip length for word-count calculation
+    # If None → Auto (script length = clip length). Set to 30, 60, 90, etc.
+    target_duration: Optional[float] = Field(
+        None,
+        description="Target narration duration in seconds. Overrides clip length for script generation."
+    )
 
 
 class EditorGenerateResponse(BaseModel):

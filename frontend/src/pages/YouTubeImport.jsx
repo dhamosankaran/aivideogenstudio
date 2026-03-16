@@ -97,6 +97,9 @@ export default function YouTubeImport() {
   const playerRef = useRef(null);
   const playerInstanceRef = useRef(null);
 
+  // Multi-trim: set of selected insight indices
+  const [selectedInsights, setSelectedInsights] = useState(new Set());
+
   // ── Step 3: Script Studio ──
   const [scriptData, setScriptData] = useState(null);
   const [scriptLoading, setScriptLoading] = useState(false);
@@ -105,6 +108,9 @@ export default function YouTubeImport() {
   const [aspectRatio, setAspectRatio] = useState('16:9');
   const [commentaryStyle, setCommentaryStyle] = useState('reaction');
   const [contentType, setContentType] = useState('youtube_import');
+  const [companyName, setCompanyName] = useState('');
+  // Target duration: null = Auto (match clip), or a number in seconds (30, 60, 90)
+  const [targetDuration, setTargetDuration] = useState(null);
 
   // Voice selection
   const [voiceData, setVoiceData] = useState(null);
@@ -276,6 +282,23 @@ export default function YouTubeImport() {
   // ═══════════════════════════════════════════════════════════
   // STEP 3: Script Generation & Editing
   // ═══════════════════════════════════════════════════════════
+  const toggleInsightSelection = (index) => {
+    setSelectedInsights(prev => {
+      const next = new Set(prev);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      return next;
+    });
+  };
+
+  // When multi-trim is active, compute total duration label
+  const multiTrimDuration = selectedInsights.size > 0 && selectedSource?.insights
+    ? Array.from(selectedInsights).reduce((sum, i) => {
+        const ins = selectedSource.insights[i];
+        return sum + ((ins?.end_time ?? (ins?.start_time ?? 0) + 60) - (ins?.start_time ?? 0));
+      }, 0)
+    : null;
+
   const handleGenerateScript = async () => {
     if (!selectedSource) return;
     setScriptLoading(true);
@@ -287,6 +310,9 @@ export default function YouTubeImport() {
         commentaryStyle,
         contentType,
         autoApprove: false,
+        selectedInsights: selectedInsights.size > 0 ? Array.from(selectedInsights) : undefined,
+        companyName: companyName.trim() || undefined,
+        targetDuration: targetDuration || undefined,
       });
 
       setScriptData(result);
@@ -346,7 +372,9 @@ export default function YouTubeImport() {
         voiceId,
         creditsOverlay: true,
         aspectRatio,
+        targetDuration: targetDuration || undefined,
         outputMode,
+        selectedInsights: selectedInsights.size > 0 ? Array.from(selectedInsights) : undefined,
       });
       setSuccess('🚀 Video generation started! Redirecting to validation...');
       setTimeout(() => (window.location.href = '/videos'), 2000);
@@ -501,6 +529,7 @@ export default function YouTubeImport() {
               )}
             </div>
           </div>
+
         </div>
       )}
 
@@ -578,6 +607,25 @@ export default function YouTubeImport() {
                 </span>
               </label>
             </div>
+
+            {/* Company / Brand Name — used in script hook */}
+            <div className="control-group">
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                🏷️ Company / Brand Name
+                <span style={{ fontSize: '0.75rem', fontWeight: 400, color: 'var(--text-muted)' }}>
+                  (featured in the script hook)
+                </span>
+              </label>
+              <input
+                id="yt-company-name"
+                type="text"
+                className="yt-url-input"
+                style={{ marginTop: '0.4rem', padding: '0.5rem 0.8rem', fontSize: '0.9rem' }}
+                placeholder={selectedSource?.channel_name || 'e.g. Tesla, OpenAI, Nike…'}
+                value={companyName}
+                onChange={e => setCompanyName(e.target.value)}
+              />
+            </div>
           </div>
 
           {/* Two-column: Transcript + Smart Trim Suggestions */}
@@ -623,26 +671,55 @@ export default function YouTubeImport() {
 
             {/* Smart Trim Suggestions (from insights) */}
             <div className="overview-panel">
-              <h3>💡 Smart Trim Suggestions</h3>
+              <h3 style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span>💡 Smart Trim Suggestions</span>
+                {selectedInsights.size > 1 && (
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 400 }}>
+                    {selectedInsights.size} selected · {Math.round(multiTrimDuration)}s total
+                  </span>
+                )}
+              </h3>
+              {selectedInsights.size > 0 && (
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>
+                  {selectedInsights.size > 1
+                    ? 'Multi-trim active — all selected segments will be concatenated into one script.'
+                    : 'Click card to set trim range. Check multiple to concatenate.'}
+                </div>
+              )}
               {selectedSource.insights?.length > 0 ? (
                 <div className="insights-grid" style={{ gridTemplateColumns: '1fr' }}>
-                  {selectedSource.insights.map((insight, i) => (
-                    <div
-                      key={i}
-                      className="insight-mini-card"
-                      onClick={() => handleTrimFromInsight(insight)}
-                    >
-                      <div className="insight-mini-time">
-                        ⏱ {formatTime(insight.start_time)}–{formatTime(insight.end_time)}
-                        {insight.viral_score && (
-                          <span style={{ marginLeft: '0.5rem', color: 'var(--color-warning)' }}>
-                            🔥 {insight.viral_score}/10
+                  {selectedSource.insights.map((insight, i) => {
+                    const isChecked = selectedInsights.has(i);
+                    return (
+                      <div
+                        key={i}
+                        className={`insight-mini-card ${isChecked ? 'active' : ''}`}
+                        style={{ cursor: 'pointer' }}
+                        onClick={() => handleTrimFromInsight(insight)}
+                      >
+                        {/* Header row: checkbox + timestamp + viral score */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={() => toggleInsightSelection(i)}
+                            onClick={e => e.stopPropagation()}
+                            style={{ flexShrink: 0, cursor: 'pointer', width: '14px', height: '14px' }}
+                          />
+                          <span className="insight-mini-time" style={{ flex: 1 }}>
+                            ⏱ {formatTime(insight.start_time)}–{formatTime(insight.end_time)}
                           </span>
-                        )}
+                          {insight.viral_score && (
+                            <span style={{ fontSize: '0.72rem', color: 'var(--color-warning)', flexShrink: 0 }}>
+                              🔥 {insight.viral_score}/10
+                            </span>
+                          )}
+                        </div>
+                        {/* Summary text — full width, always visible */}
+                        <div className="insight-mini-summary">{insight.summary}</div>
                       </div>
-                      <div className="insight-mini-summary">{insight.summary}</div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : summary?.video_summary ? (
                 <div className="summary-text-block">{summary.video_summary}</div>
@@ -799,6 +876,44 @@ export default function YouTubeImport() {
                     {style.charAt(0).toUpperCase() + style.slice(1)}
                   </button>
                 ))}
+              </div>
+
+              {/* Target Duration */}
+              <h3 style={{ marginTop: '1rem' }}>⏱️ Script Duration</h3>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                {[{ label: 'Auto', value: null }, { label: '30s', value: 30 }, { label: '60s', value: 60 }, { label: '90s', value: 90 }].map(opt => (
+                  <button
+                    key={opt.label}
+                    id={`yt-duration-${opt.label}`}
+                    className={`yt-analyze-btn ${targetDuration === opt.value ? 'primary' : 'secondary'}`}
+                    style={{ fontSize: '0.75rem', padding: '0.4rem 0.8rem', flex: 1 }}
+                    onClick={() => setTargetDuration(opt.value)}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.3rem' }}>
+                {targetDuration
+                  ? `Script + TTS will target ~${targetDuration}s. Video will be trimmed to match.`
+                  : 'Auto matches script length to selected clip duration.'}
+              </div>
+
+              {/* Company / Brand Name for hook */}
+              <h3 style={{ marginTop: '1rem' }}>🏢 Brand Name (for hook)</h3>
+              <input
+                type="text"
+                placeholder={selectedSource?.channel_name || 'Company name (optional)'}
+                value={companyName}
+                onChange={e => setCompanyName(e.target.value)}
+                style={{
+                  width: '100%', padding: '0.6rem 0.8rem', fontSize: '0.85rem',
+                  background: 'var(--surface-card)', border: '1px solid var(--border-card)',
+                  borderRadius: '8px', color: 'var(--text-primary)',
+                }}
+              />
+              <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.3rem' }}>
+                Used in the hook intro. Defaults to channel name if blank.
               </div>
             </div>
           </div>

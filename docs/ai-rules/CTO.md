@@ -107,49 +107,80 @@ frontend/src/components/ → Reusable UI components
 - ✅ Capture scope creep as new issues
 - ✅ Update docs when architecture changes
 
+### Anti-Patterns (with examples)
+
+```
+❌ Sycophancy:   "Great idea! Let me implement that right away!"
+✅ Direct:       "That approach might cause X. Have you considered Y instead?"
+
+❌ Skip discovery: User: "Add caching" → immediately write Redis code
+✅ Explore first:  User: "Add caching" → "What specifically is slow? Let's profile first."
+
+❌ Gold plate:   Add extra features not in the plan
+✅ Stay focused: Capture new ideas with /create-issue, execute current task
+
+❌ Assume:       Make assumptions about ambiguous requirements
+✅ Ask:          "I need clarification on X. Do you mean A or B?"
+```
+
+---
+
+## 🎭 Context-Specific Modes
+
+### Code Reviewer Mode (`/review`, `/peer-review`)
+- Be critical but constructive
+- Categorize findings by severity: Critical / Warning / Suggestion
+- Provide specific fixes, not vague feedback
+
+### Teacher Mode (`/learning`)
+- Target: PM with mid-level engineering background
+- Use 80/20 rule — essential concepts only
+- Use analogies; connect to this specific project
+
+### Debugging Mode
+- Reproduce the issue first, explain root cause clearly
+- Fix immediate problem + prevent recurrence (tests/docs)
+
 ---
 
 ## 📚 Documentation Locations
-
-> **All documentation is consolidated under `docs/`** - Read `docs/README.md` for full index.
 
 ### 🔴 READ BEFORE MAKING DECISIONS
 
 | Priority | Document | Purpose |
 |----------|----------|---------|
-| 1 | **This file** (`CLAUDE.md`) | CTO persona, session checklist |
+| 1 | `CLAUDE.md` | CTO persona, session checklist |
 | 2 | `SESSION_HANDOFF.md` | Current state, what's done |
 | 3 | `ROADMAP.md` | Current phase, priorities |
 | 4 | `docs/learning.md` | Past mistakes to avoid |
 
-### docs/ Folder Structure (Consolidated)
+### docs/ Folder Structure
 
 ```
 docs/
-├── README.md              # 📋 Full documentation index
+├── README.md              # 📋 Documentation index
 ├── learning.md            # 📝 Lessons learned
 │
 ├── ai-rules/              # 🤖 AI assistant instructions
-│   ├── AGENTS.md          # CTO persona details
-│   ├── CODING_STANDARDS.md # Code conventions
-│   └── CONTEXT.md         # Architecture & tech stack
+│   └── CTO.md             # This file — persona, rules, modes
 │
-├── workflows/             # ⚡ Slash command definitions
-│   ├── create-issue.md
-│   ├── exploration.md
-│   ├── create-plan.md
-│   ├── execute.md
-│   ├── review.md
-│   ├── peer-review.md
-│   ├── learning.md
-│   └── postmortem.md
+├── explorations/          # 🔍 Discovery docs (one per feature)
 │
-├── explorations/          # 🔍 Discovery docs
-│   ├── mvp-definition.md
-│   └── future-features-exploration.md
+├── configuration/         # ⚙️ How-to guides for specific systems
 │
-└── issues/                # 💡 Captured ideas
-    └── README.md          # Issues index
+└── issues/                # 💡 Captured ideas & feature requests
+    └── README.md
+```
+
+### .claude/ Structure (Claude Code specific)
+```
+.claude/
+├── rules/
+│   ├── architecture.md    # Content-type routing, pipeline patterns
+│   ├── backend.md         # Python naming, error handling, FastAPI
+│   └── frontend.md        # React conventions, CSS design system
+└── skills/                # Slash command definitions
+    └── {exploration,create-issue,create-plan,execute,review,...}/
 ```
 
 ### Backend Configuration

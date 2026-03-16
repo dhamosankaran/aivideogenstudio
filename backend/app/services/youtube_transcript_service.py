@@ -9,6 +9,7 @@ Handles:
 
 import re
 import logging
+from pathlib import Path
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
@@ -176,10 +177,23 @@ class YouTubeTranscriptService:
             logger.info(f"Transcript extracted: {len(transcript_list)} segments, {total_duration:.1f}s total")
             return youtube_source
             
-        except TranscriptsDisabled:
-            raise ValueError(f"Transcripts are disabled for video: {video_id}")
-        except NoTranscriptFound:
-            raise ValueError(f"No transcript found for video: {video_id}")
+        except (TranscriptsDisabled, NoTranscriptFound) as e:
+            # Captions unavailable — create source without transcript.
+            # Gemini video analysis will generate transcript_segments later.
+            logger.warning(f"YouTube captions unavailable for {video_id}: {e}. Proceeding without transcript.")
+            youtube_source = YouTubeSource(
+                youtube_url=youtube_url,
+                youtube_video_id=video_id,
+                transcript=None,
+                duration_seconds=0,
+                analysis_status="pending",
+                transcript_source=None,
+                thumbnail_url=f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"
+            )
+            self.db.add(youtube_source)
+            self.db.commit()
+            self.db.refresh(youtube_source)
+            return youtube_source
         except Exception as e:
             logger.error(f"Failed to extract transcript: {str(e)}")
             raise ValueError(f"Failed to extract transcript: {str(e)}")
@@ -202,7 +216,65 @@ class YouTubeTranscriptService:
             raise ValueError(f"YouTubeSource not found: {youtube_source_id}")
         
         if not source.transcript and not source.transcript_segments:
-            raise ValueError("No transcript available for analysis")
+            # No YouTube captions — try Gemini video analysis on the downloaded file
+            if source.downloaded_path and Path(source.downloaded_path).exists():
+                logger.info(f"No transcript for source {youtube_source_id}. Falling back to Gemini video analysis...")
+                try:
+                    from app.services.gemini_video_service import GeminiVideoService
+                    gemini_video = GeminiVideoService()
+                    captions = gemini_video.generate_captions(
+                        video_path=Path(source.downloaded_path),
+                        video_title=source.title,
+                        channel_name=source.channel_name,
+                    )
+                    if captions:
+                        source.transcript_segments = captions
+                        source.transcript_source = "gemini_video"
+                        # Also compute duration from the last caption
+                        if captions:
+                            last_seg = captions[-1]
+                            end_time = last_seg.get("end", last_seg.get("start", 0))
+                            if end_time and (not source.duration_seconds or source.duration_seconds == 0):
+                                source.duration_seconds = end_time
+                        self.db.commit()
+                        logger.info(f"Gemini video analysis generated {len(captions)} transcript segments")
+                    else:
+                        raise ValueError("Gemini returned empty captions")
+                except Exception as e:
+                    logger.error(f"Gemini video analysis failed: {e}")
+                    raise ValueError(f"No transcript available and Gemini video analysis failed: {e}")
+            else:
+                # No transcript AND no downloaded video file — need to download first
+                logger.warning(f"No transcript and no downloaded video for source {youtube_source_id}. Attempting download...")
+                try:
+                    from app.services.video_downloader_service import VideoDownloaderService
+                    downloader = VideoDownloaderService()
+                    download_path, _ = await downloader.download_video(source.youtube_url)
+                    source.downloaded_path = str(download_path)
+                    self.db.commit()
+                    
+                    from app.services.gemini_video_service import GeminiVideoService
+                    gemini_video = GeminiVideoService()
+                    captions = gemini_video.generate_captions(
+                        video_path=Path(source.downloaded_path),
+                        video_title=source.title,
+                        channel_name=source.channel_name,
+                    )
+                    if captions:
+                        source.transcript_segments = captions
+                        source.transcript_source = "gemini_video"
+                        if captions:
+                            last_seg = captions[-1]
+                            end_time = last_seg.get("end", last_seg.get("start", 0))
+                            if end_time and (not source.duration_seconds or source.duration_seconds == 0):
+                                source.duration_seconds = end_time
+                        self.db.commit()
+                        logger.info(f"Downloaded + Gemini analysis generated {len(captions)} transcript segments")
+                    else:
+                        raise ValueError("Gemini returned empty captions after download")
+                except Exception as e:
+                    logger.error(f"Download + Gemini video analysis failed: {e}")
+                    raise ValueError(f"No transcript available and failed to generate via Gemini: {e}")
         
         # Update status
         source.analysis_status = "analyzing"

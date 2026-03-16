@@ -1311,7 +1311,12 @@ class EnhancedVideoCompositionService:
             final_video = main_video
         else:
             logger.info("Adding end screen...")
-            end_screen_path = self.end_screen_service.generate_end_screen(content_type)
+            ar = "16:9" if w > h else ("1:1" if w == h else "9:16")
+            # Fast path: return pre-built asset; only generate if somehow missing
+            end_screen_path = (
+                self.end_screen_service.get_cached_path(content_type, ar)
+                or self.end_screen_service.generate_end_screen(content_type, aspect_ratio=ar)
+            )
             end_screen_clip = ImageClip(str(end_screen_path))
             end_screen_clip = end_screen_clip.with_duration(4)
             end_screen_clip = end_screen_clip.resized((w, h))
@@ -2409,9 +2414,12 @@ class EnhancedVideoCompositionService:
 
         # --- append end screen ---
         try:
-            content_type     = getattr(script, "content_type", "youtube_import") or "youtube_import"
-            # FIX: correct method name is generate_end_screen
-            end_screen_path  = self.end_screen_service.generate_end_screen(content_type)
+            content_type = getattr(script, "content_type", "youtube_import") or "youtube_import"
+            ar = "16:9" if w > h else ("1:1" if w == h else "9:16")
+            end_screen_path = (
+                self.end_screen_service.get_cached_path(content_type, ar)
+                or self.end_screen_service.generate_end_screen(content_type, aspect_ratio=ar)
+            )
             if end_screen_path and Path(end_screen_path).exists():
                 end_clip = (
                     ImageClip(str(end_screen_path))

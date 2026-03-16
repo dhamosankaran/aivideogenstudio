@@ -38,6 +38,22 @@ async def lifespan(app: FastAPI):
     # Initialize database
     init_db()
     logger.info("database_initialized")
+
+    # Pre-build end screen assets (non-blocking — runs in background thread)
+    # Generates images for all content_type × aspect_ratio combos once; skips
+    # existing files on subsequent restarts (force=False).
+    import threading
+    def _prebuild_end_screens():
+        try:
+            from app.services.end_screen_service import EndScreenService
+            svc = EndScreenService()
+            results = svc.prebuild_all(force=False)
+            total = len(results)
+            errors = sum(1 for v in results.values() if v is None)
+            logger.info(f"[startup] End screen prebuild complete: {total - errors}/{total} assets ready")
+        except Exception as e:
+            logger.warning(f"[startup] End screen prebuild failed (non-fatal): {e}")
+    threading.Thread(target=_prebuild_end_screens, daemon=True, name="end-screen-prebuild").start()
     
     yield
     

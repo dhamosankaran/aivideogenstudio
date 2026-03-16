@@ -351,23 +351,36 @@ export async function editorGenerate(sourceId, options = {}) {
  * @returns {Promise<Object>} Script preview with scenes and catchy title
  */
 export async function generateScript(sourceId, options = {}) {
+    const body = {
+        trim_start: options.trimStart ?? null,
+        trim_end: options.trimEnd ?? null,
+        strip_audio: options.stripAudio ?? true,
+        music_track: options.musicTrack ?? null,
+        music_volume: options.musicVolume ?? 0.12,
+        generate_captions: options.generateCaptions ?? true,
+        caption_source: options.captionSource ?? 'transcript',
+        commentary_style: options.commentaryStyle ?? 'reaction',
+        auto_approve: false,
+        content_type: options.contentType ?? 'youtube_import',
+    };
+    // Multi-trim: pass selected insight indices if provided
+    if (options.selectedInsights && options.selectedInsights.length > 0) {
+        body.selected_insights = options.selectedInsights;
+    }
+    // Branding: company name for hook
+    if (options.companyName) {
+        body.company_name = options.companyName;
+    }
+    // Target duration: override script word-count math
+    if (options.targetDuration) {
+        body.target_duration = options.targetDuration;
+    }
     const response = await fetch(
         `${API_BASE}/api/youtube/sources/${sourceId}/generate-script`,
         {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                trim_start: options.trimStart ?? null,
-                trim_end: options.trimEnd ?? null,
-                strip_audio: options.stripAudio ?? true,
-                music_track: options.musicTrack ?? null,
-                music_volume: options.musicVolume ?? 0.12,
-                generate_captions: options.generateCaptions ?? true,
-                caption_source: options.captionSource ?? 'transcript',
-                commentary_style: options.commentaryStyle ?? 'reaction',
-                auto_approve: false,
-                content_type: options.contentType ?? 'youtube_import'
-            })
+            body: JSON.stringify(body),
         }
     );
 
@@ -396,6 +409,13 @@ export async function approveAndRender(scriptId, editorSettings = {}) {
         tts_provider: editorSettings.ttsProvider ?? 'openai',
         credits_overlay: editorSettings.creditsOverlay ?? false,
     });
+    if (editorSettings.targetDuration) {
+        params.set('target_duration', editorSettings.targetDuration);
+    }
+    // Multi-trim support: pass selected insight boundaries if present
+    if (editorSettings.selectedInsights && editorSettings.selectedInsights.length > 0) {
+        params.set('selected_insights', JSON.stringify(editorSettings.selectedInsights));
+    }
     if (editorSettings.musicTrack) {
         params.set('music_track', editorSettings.musicTrack);
     }

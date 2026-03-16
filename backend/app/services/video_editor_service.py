@@ -19,8 +19,10 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-# Working directory for edited clips
-EDITOR_DIR = Path("data/editor")
+# Working directory for edited clips — always absolute so background tasks can resolve files
+_SERVICE_DIR = Path(__file__).resolve().parent   # app/services/
+_BACKEND_DIR = _SERVICE_DIR.parent.parent         # backend/
+EDITOR_DIR = _BACKEND_DIR / "data" / "editor"
 EDITOR_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -28,7 +30,7 @@ class VideoEditorService:
     """Non-destructive video editor using ffmpeg."""
 
     def __init__(self, output_dir: Optional[Path] = None):
-        self.output_dir = output_dir or EDITOR_DIR
+        self.output_dir = Path(output_dir).resolve() if output_dir else EDITOR_DIR
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Trim ────────────────────────────────────────────────────

@@ -340,7 +340,8 @@ class ScriptService:
         source_title: str,
         source_channel: str = "Unknown Channel",
         mode: str = "reaction",
-        clip_duration: float = 30.0
+        clip_duration: float = 30.0,
+        company_name: str | None = None,
     ) -> Dict:
         """
         Generate a commentary script for Mode A (Clip + Commentary) videos.
@@ -371,14 +372,15 @@ class ScriptService:
         num_scenes = max(3, min(10, int(clip_duration / 15)))
         
         # Build prompt for narration generation
-        prompt = self._build_commentary_prompt(
+        prompt = self._build_engaging_yt_prompt(
             insight=insight,
             source_title=source_title,
             source_channel=source_channel,
+            company_name=company_name or source_channel,
             mode=mode,
             target_words=target_words,
             clip_duration=clip_duration,
-            num_scenes=num_scenes
+            num_scenes=num_scenes,
         )
         
         try:
@@ -504,8 +506,118 @@ Return JSON with this structure:
   "title_suggestion": "<catchy video title>"
 }}'''
 
+    def _build_visual_context(self, segments: list, trim_start: float, trim_end: float) -> str:
+        """
+        Build a timestamped visual context string from transcript segments.
+        Used to give the LLM a clear chronological map of what's on screen.
+        """
+        if not segments:
+            return "No transcript available."
+        relevant = [s for s in segments if trim_start <= s.get("start", 0) < trim_end]
+        if not relevant:
+            relevant = segments[:20]  # fallback: use first 20 segs
+        lines = []
+        for seg in relevant:
+            t = seg.get("start", 0)
+            m = int(t) // 60
+            s = int(t) % 60
+            lines.append(f"[{m}:{s:02d}] {seg.get('text', '').strip()}")
+        return "\n".join(lines)
 
-    
+    def _build_engaging_yt_prompt(
+        self,
+        insight: dict,
+        source_title: str,
+        source_channel: str,
+        company_name: str,
+        mode: str,
+        target_words: int,
+        clip_duration: float,
+        num_scenes: int = 5,
+    ) -> str:
+        """
+        Engaging YouTube script prompt with mandatory Hook / Body / CTA structure.
+
+        Replaces the generic _build_commentary_prompt for all YouTube transcript flows.
+        The hook must naturally introduce [company_name]; the body must follow the
+        chronological order of the [Visual Context] derived from transcript segments;
+        the CTA closes with a strong call to action.
+        """
+        transcript_text = insight.get("transcript_text", "")
+        summary_text = insight.get("summary", "")
+        raw_segments = insight.get("raw_segments", [])
+
+        trim_start = insight.get("start_time", 0.0)
+        trim_end = insight.get("end_time", trim_start + clip_duration)
+        visual_context = self._build_visual_context(raw_segments, trim_start, trim_end)
+
+        mode_tone = {
+            "reaction": "energetic, conversational, excited — like a friend showing you something amazing",
+            "analysis": "informed, confident, insightful — like a tech journalist breaking down the significance",
+            "educational": "clear, step-by-step, accessible — like a knowledgeable teacher guiding the viewer",
+        }.get(mode, "engaging and dynamic")
+
+        return f'''You are an elite YouTube Shorts scriptwriter. Your job is to transform raw transcript and visual context into a high-retention narration script.
+
+SOURCE:
+- Video title: "{source_title}"
+- Channel / Brand: {source_channel}
+- Company name to feature: {company_name}
+- Clip duration: {clip_duration:.0f} seconds
+- Target word count: ~{target_words} words ({num_scenes} scenes)
+- Tone: {mode_tone}
+
+VISUAL CONTEXT (timestamped — follow this order strictly, do NOT skip or reorder):
+{visual_context}
+
+TRIMMED TRANSCRIPT (use for factual accuracy):
+{transcript_text}
+
+VIDEO SUMMARY:
+{summary_text}
+
+MANDATORY SCRIPT STRUCTURE:
+
+**SCENE 1 — The Hook & Intro (0:00–0:05)**
+- First 3 seconds must be an attention-grabbing statement that creates curiosity or highlights a pain point.
+- Naturally introduce "{company_name}" — NOT as a forced brand mention, but woven into the hook.
+- GOOD: "Instead of spending your weekend scrubbing floors, {company_name}'s new robot is changing everything."
+- BAD: "Today we're looking at {company_name}. They make robots."
+- The hook should make a viewer stop scrolling.
+
+**SCENES 2 to {num_scenes - 1} — The Body**
+- Follow the CHRONOLOGICAL ORDER of the Visual Context above.
+- Match narration to what is happening on screen at each timestamp.
+- Use punchy, dynamic, action-oriented language.
+- If the visual shows a robot picking up a bottle, narrate that exact moment with precision and energy.
+- NO filler. NO hallucinated actions. Only narrate what the visual context confirms is happening.
+- Each scene: 2–4 sentences, vivid and specific.
+
+**SCENE {num_scenes} — Conclusion & CTA**
+- Wrap up with a 1–2 sentence summary of the value demonstrated.
+- End with a clear, punchy Call to Action: "Follow for more", "Drop a comment", "Link in bio", etc.
+- Make the CTA feel like a natural conclusion, not an afterthought.
+
+CRITICAL RULES:
+- Total narration ≈ {target_words} words to fill {clip_duration:.0f} seconds at ~2.5 words/second.
+- Do NOT invent actions not present in the visual context.
+- Do NOT use "{company_name}" more than twice — let the product/action do the talking.
+- Write in second or third person — never first person ("I").
+- Each scene must map to a distinct visual moment from the timestamp list.
+
+Return ONLY valid JSON, no preamble:
+{{
+  "hook": "<the exact opening line — 5–12 words, grabs attention>",
+  "scenes": [
+    {{"scene_number": 1, "text": "<hook + company intro, 2-3 sentences>", "visual_cues": "<what timestamp shows>", "image_keywords": ["keyword1", "keyword2"]}},
+    {{"scene_number": 2, "text": "<body narration matching visual context>", "visual_cues": "<timestamp action>", "image_keywords": ["keyword1"]}},
+    ... ({num_scenes} scenes total, last scene is CTA)
+  ],
+  "call_to_action": "<the standalone CTA line from the final scene>",
+  "title_suggestion": "<catchy, SEO-friendly video title under 60 chars>"
+}}'''
+
+
     def validate_script(self, script: str, content_type: str = "") -> ValidationResult:
         """
         Validate a script against quality criteria.

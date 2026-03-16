@@ -663,6 +663,12 @@
     transform: translateY(-2px);
 }
 
+.insight-mini-card.active {
+    background: rgba(99, 102, 241, 0.12);
+    border-color: var(--color-primary, #6366f1);
+    box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.3), 0 4px 16px rgba(99, 102, 241, 0.15);
+}
+
 .insight-mini-time {
     font-size: 0.75rem;
     color: var(--color-primary-light, #818cf8);

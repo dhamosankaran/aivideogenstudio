@@ -516,10 +516,19 @@ async def generate_preview_clip(
         raise HTTPException(status_code=404, detail="YouTube source not found")
 
     if not source.downloaded_path or not Path(source.downloaded_path).exists():
-        raise HTTPException(
-            status_code=400,
-            detail="Video not downloaded yet. Please download the video first.",
-        )
+        # Auto-download if not yet done — same pattern as approve_and_render
+        try:
+            from app.services.video_downloader_service import VideoDownloaderService
+            logger.info(f"[preview] Auto-downloading video for source {source.id}...")
+            downloader = VideoDownloaderService()
+            download_path, _ = await downloader.download_video(source.youtube_url)
+            source.downloaded_path = str(download_path)
+            db.commit()
+        except Exception as dl_err:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Video not downloaded and auto-download failed: {dl_err}",
+            )
 
     try:
         editor = VideoEditorService()
@@ -887,24 +896,99 @@ async def generate_script_from_transcript(
         raise HTTPException(status_code=404, detail="YouTube source not found")
 
     try:
-        # Gather transcript text
+        # ── Gather transcript text ────────────────────────────────────────
+        # Priority: multi-trim (selected_insights) > single trim range > full transcript
         transcript_text = ""
-        if source.transcript_segments:
-            # Use trimmed portion of transcript if trim range specified
-            if request.trim_start is not None and request.trim_end is not None:
-                transcript_text = " ".join(
-                    s["text"] for s in source.transcript_segments
-                    if s.get("start", 0) >= request.trim_start
-                    and s.get("end", s.get("start", 0)) <= request.trim_end
-                )
-            if not transcript_text:
-                transcript_text = " ".join(
-                    s["text"] for s in source.transcript_segments
-                )
-        elif source.transcript:
-            transcript_text = " ".join(
-                e.get("text", "") for e in source.transcript
+        clip_duration = source.duration_seconds or 60
+        selected_insight_objects = []  # used to pass visual context to prompt
+
+        all_segments = source.transcript_segments or []
+
+        def _segments_in_range(segs, start, end):
+            """Filter segments whose start falls within [start, end)."""
+            return [s for s in segs if s.get("start", 0) >= start and s.get("start", 0) < end]
+
+        def _yt_segments_in_range(yt_transcript, start, end):
+            """
+            Filter source.transcript (YouTube captions: {text, start, duration})
+            to entries in [start, end). Returns [{text, start, end}] compatible with raw_segments.
+            """
+            segs = []
+            for entry in (yt_transcript or []):
+                seg_start = entry.get("start", 0)
+                if seg_start >= start and seg_start < end:
+                    seg_end = seg_start + entry.get("duration", 3.0)
+                    segs.append({"text": entry.get("text", ""), "start": seg_start, "end": seg_end})
+            return segs
+
+        def _find_matching_insight(insights, trim_start, trim_end):
+            """Return the insight whose window best overlaps [trim_start, trim_end)."""
+            if not insights:
+                return None
+            best, best_overlap = None, 0.0
+            for ins in insights:
+                ins_s = ins.get("start_time", 0)
+                ins_e = ins.get("end_time", ins_s + 60)
+                overlap = max(0.0, min(trim_end, ins_e) - max(trim_start, ins_s))
+                if overlap > best_overlap:
+                    best_overlap, best = overlap, ins
+            return best if best_overlap > 0 else None
+
+        if request.selected_insights and source.insights:
+            # ── Multi-trim: concatenate transcript from each selected insight ──
+            valid_indices = [i for i in request.selected_insights if 0 <= i < len(source.insights)]
+            selected_insight_objects = sorted(
+                [source.insights[i] for i in valid_indices],
+                key=lambda x: x.get("start_time", 0),
             )
+            parts = []
+            total_duration = 0.0
+            for ins in selected_insight_objects:
+                ins_start = ins.get("start_time", 0)
+                ins_end = ins.get("end_time", ins_start + 60)
+                seg_texts = [s["text"] for s in _segments_in_range(all_segments, ins_start, ins_end)]
+                if seg_texts:
+                    parts.append(" ".join(seg_texts))
+                else:
+                    # FIX: fall back through YT captions → insight.transcript_text when segments are empty
+                    yt_segs = _yt_segments_in_range(source.transcript, ins_start, ins_end)
+                    fallback = " ".join(s["text"] for s in yt_segs) if yt_segs else ins.get("transcript_text", "")
+                    if fallback:
+                        parts.append(fallback)
+                        logger.info(f"[multi-trim] [{ins_start:.0f}s-{ins_end:.0f}s]: fallback={'yt-captions' if yt_segs else 'insight.transcript_text'} ({len(fallback)} chars)")
+                total_duration += ins_end - ins_start
+            transcript_text = " [...] ".join(parts)  # mark edit points
+            clip_duration = total_duration
+
+        elif request.trim_start is not None and request.trim_end is not None:
+            # ── Single-trim: strictly constrain to selected range ──
+            # Priority 1: transcript_segments (Whisper/Gemini) — most accurate
+            trim_segs = _segments_in_range(all_segments, request.trim_start, request.trim_end)
+            if trim_segs:
+                transcript_text = " ".join(s["text"] for s in trim_segs)
+                logger.info(f"[single-trim] Using {len(trim_segs)} transcript_segments in range")
+            else:
+                # Priority 2: YouTube captions filtered to the trim range
+                yt_range = _yt_segments_in_range(source.transcript, request.trim_start, request.trim_end)
+                if yt_range:
+                    transcript_text = " ".join(s["text"] for s in yt_range)
+                    logger.info(f"[single-trim] Using {len(yt_range)} yt-caption segs in range")
+                else:
+                    # Priority 3 (FIX): use the matching insight's transcript_text — the
+                    # authoritative AI-scoped text for this exact time window.
+                    matched_insight = _find_matching_insight(source.insights, request.trim_start, request.trim_end)
+                    if matched_insight:
+                        transcript_text = matched_insight.get("transcript_text", "")
+                        logger.info(f"[single-trim] FIX: Using insight.transcript_text ({len(transcript_text)} chars) for range [{request.trim_start:.0f}s-{request.trim_end:.0f}s]")
+                    # Do NOT fall back to full transcript — strict scope constraint is intentional
+            clip_duration = request.trim_end - request.trim_start
+
+        else:
+            # ── No trim: use full transcript ──
+            if all_segments:
+                transcript_text = " ".join(s["text"] for s in all_segments)
+            elif source.transcript:
+                transcript_text = " ".join(e.get("text", "") for e in source.transcript)
 
         if not transcript_text and not source.video_summary:
             raise HTTPException(
@@ -921,13 +1005,11 @@ async def generate_script_from_transcript(
             .first()
         )
         if article:
-            # Update existing article
             article.content = transcript_text[:2000] if transcript_text else source.video_summary or ""
             article.summary = source.video_summary or transcript_text[:500]
             article.suggested_content_type = request.content_type
             article.is_selected = True
         else:
-            # Create new article with unique URL
             unique_url = f"{source.youtube_url}#editor-{int(time.time())}"
             article = Article(
                 youtube_source_id=source.id,
@@ -943,34 +1025,40 @@ async def generate_script_from_transcript(
         db.commit()
         db.refresh(article)
 
-        # Calculate clip duration
-        clip_duration = (
-            (request.trim_end - request.trim_start)
-            if request.trim_start is not None and request.trim_end is not None
-            else source.duration_seconds or 60
-        )
+        # Build insight data — include visual context from raw segments
+        # FIX: raw_segments now falls back to YT captions so visual context is always populated
+        trim_s = request.trim_start or 0
+        trim_e = request.trim_end or clip_duration
+        raw_segs_for_prompt = _segments_in_range(all_segments, trim_s, trim_e)
+        if not raw_segs_for_prompt:
+            raw_segs_for_prompt = _yt_segments_in_range(source.transcript, trim_s, trim_e)
 
-        # Build insight data for the script generator (enriched with description)
         video_desc = source.description or ""
         insight_data = {
             "summary": source.video_summary or transcript_text[:300],
-            "key_points": [],
-            "hook": f"This from {source.channel_name or 'this video'} is incredible!",
+            "key_points": [ins.get("summary", "") for ins in selected_insight_objects] if selected_insight_objects else [],
             "transcript_text": transcript_text[:1500],
             "video_description": video_desc[:500],
             "video_title": source.title or "Video",
-            "start_time": request.trim_start or 0,
-            "end_time": request.trim_end or (source.duration_seconds or 60),
+            "start_time": trim_s,
+            "end_time": trim_e,
+            # Pass raw segments so prompt can build timestamped visual context
+            "raw_segments": raw_segs_for_prompt,
         }
 
         # Generate the script using LLM
+        # target_duration overrides clip_duration for word-count math when set
+        script_target_duration = request.target_duration if request.target_duration else clip_duration
+        logger.info(f"Script generation: clip_duration={clip_duration:.1f}s, script_target_duration={script_target_duration:.1f}s")
+
         script_service = ScriptService(db)
         commentary_data = await script_service.generate_commentary_script(
             insight=insight_data,
             source_title=source.title or "Video",
             source_channel=source.channel_name or "Unknown",
             mode=request.commentary_style,
-            clip_duration=clip_duration,
+            clip_duration=script_target_duration,
+            company_name=request.company_name or source.channel_name,
         )
 
         # Save as pending script
@@ -1048,10 +1136,19 @@ async def editor_generate_video(
         raise HTTPException(status_code=404, detail="YouTube source not found")
 
     if not source.downloaded_path or not Path(source.downloaded_path).exists():
-        raise HTTPException(
-            status_code=400,
-            detail="Video not downloaded yet. Use /download first.",
-        )
+        # Auto-download if not yet done — same pattern as approve_and_render
+        try:
+            from app.services.video_downloader_service import VideoDownloaderService
+            logger.info(f"[editor/generate] Auto-downloading video for source {source.id}...")
+            downloader = VideoDownloaderService()
+            download_path, _ = await downloader.download_video(source.youtube_url)
+            source.downloaded_path = str(download_path)
+            db.commit()
+        except Exception as dl_err:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Video not downloaded and auto-download failed: {dl_err}",
+            )
 
     try:
         editor = VideoEditorService()
@@ -1081,12 +1178,20 @@ async def editor_generate_video(
                     working_path, music_path, request.music_volume
                 )
 
-        # Step 4: Create article (use summary or transcript for content)
+        # Step 4: Create article — use only the trimmed portion of transcript
         transcript_text = ""
         if source.transcript_segments:
-            transcript_text = " ".join(
-                s["text"] for s in source.transcript_segments
-            )
+            if request.trim_start is not None and request.trim_end is not None:
+                transcript_text = " ".join(
+                    s["text"] for s in source.transcript_segments
+                    if s.get("start", 0) >= request.trim_start
+                    and s.get("start", 0) < request.trim_end
+                )
+            if not transcript_text and request.trim_start is None:
+                # No trim specified — use full transcript
+                transcript_text = " ".join(
+                    s["text"] for s in source.transcript_segments
+                )
         elif source.transcript:
             transcript_text = " ".join(
                 e.get("text", "") for e in source.transcript
@@ -1111,13 +1216,21 @@ async def editor_generate_video(
         script_service = ScriptService(db)
 
         # Build insight-like dict for script generation
+        trim_start = request.trim_start or 0
+        trim_end = request.trim_end or (source.duration_seconds or 60)
+        raw_segs = (source.transcript_segments or [])
+        trimmed_segs = [
+            s for s in raw_segs
+            if s.get("start", 0) >= trim_start and s.get("start", 0) < trim_end
+        ] or raw_segs  # fall back to all segs for visual context only
+
         insight_data = {
             "summary": source.video_summary or transcript_text[:300],
             "key_points": [],
-            "hook": f"This from {source.channel_name or 'this video'} is incredible!",
             "transcript_text": transcript_text[:1500],
-            "start_time": request.trim_start or 0,
-            "end_time": request.trim_end or (source.duration_seconds or 60),
+            "start_time": trim_start,
+            "end_time": trim_end,
+            "raw_segments": trimmed_segs,
         }
 
         clip_duration = (
@@ -1132,6 +1245,7 @@ async def editor_generate_video(
             source_channel=source.channel_name or "Unknown",
             mode=request.commentary_style,
             clip_duration=clip_duration,
+            company_name=request.company_name or source.channel_name,
         )
 
         script = Script(
@@ -1216,14 +1330,18 @@ async def approve_and_render(
     generate_tts: bool = False,
     tts_provider: str = "openai",
     credits_overlay: bool = False,
+    selected_insights: str = None,
+    aspect_ratio: str = "16:9",
+    target_duration: float = None,
 ):
     """
     Approve a pending script and start full video pipeline:
     1. Download the source video
-    2. Apply trim/strip-audio/music edits
+    2. Apply trim/strip-audio/music edits (multi-trim concat if selected_insights provided)
     3. Approve the script
     4. Start video rendering in background
     """
+    import json as _json
     from app.models import Script, Article, YouTubeSource
     from app.services.video_downloader_service import VideoDownloaderService
     from app.services.video_editor_service import VideoEditorService
@@ -1251,15 +1369,51 @@ async def approve_and_render(
         if not source.downloaded_path or not Path(source.downloaded_path).exists():
             logger.info(f"Downloading video for source {source.id}...")
             downloader = VideoDownloaderService()
-            download_path, download_meta = downloader.download_video(source.youtube_url)
+            download_path, download_meta = await downloader.download_video(source.youtube_url)
             source.downloaded_path = str(download_path)
             db.commit()
 
-        working_path = Path(source.downloaded_path)
+        # Resolve to absolute path immediately — background tasks may have a different cwd
+        working_path = Path(source.downloaded_path).resolve()
+        if not working_path.exists():
+            raise FileNotFoundError(f"Downloaded video not found: {working_path}")
 
-        # Step 2: Trim
-        editor = VideoEditorService()
-        if trim_start > 0 or trim_end < (source.duration_seconds or 9999):
+        # Step 2: Trim — multi-trim concat or single trim
+        editor = VideoEditorService(output_dir=working_path.parent.parent / "editor")
+
+        # Parse selected_insights JSON if provided
+        insight_indices = None
+        if selected_insights:
+            try:
+                insight_indices = _json.loads(selected_insights)
+                if not isinstance(insight_indices, list):
+                    insight_indices = None
+            except (ValueError, TypeError):
+                insight_indices = None
+
+        if insight_indices and source.insights:
+            # ── Multi-trim: trim each insight segment, then concatenate ──
+            valid_indices = [i for i in insight_indices if 0 <= i < len(source.insights)]
+            segments = sorted(
+                [source.insights[i] for i in valid_indices],
+                key=lambda x: x.get("start_time", 0),
+            )
+            if segments:
+                clip_paths = []
+                for seg in segments:
+                    seg_start = seg.get("start_time", 0)
+                    seg_end = seg.get("end_time", seg_start + 60)
+                    clip = editor.trim_clip(working_path, seg_start, seg_end)
+                    clip_paths.append(clip)
+                    logger.info(f"[multi-trim] Trimmed segment {seg_start:.0f}s–{seg_end:.0f}s → {clip}")
+
+                working_path = editor.concat_clips(clip_paths)
+                logger.info(f"[multi-trim] Concatenated {len(clip_paths)} clips → {working_path}")
+            else:
+                # All indices invalid — fall back to global trim
+                if trim_start > 0 or trim_end < (source.duration_seconds or 9999):
+                    working_path = editor.trim_clip(working_path, trim_start, trim_end)
+        elif trim_start > 0 or trim_end < (source.duration_seconds or 9999):
             working_path = editor.trim_clip(working_path, trim_start, trim_end)
 
         # Step 3: Strip audio
@@ -1294,6 +1448,57 @@ async def approve_and_render(
                     working_path = editor.overlay_tts_audio(
                         working_path, audio_path, volume=1.0, ducking_volume=0.1
                     )
+
+                    # ── Bidirectional TTS-video sync ──────────────────────────────
+                    # Measure actual TTS audio length and adjust the video to match.
+                    # Case A: clip > TTS → trim dead-air tail from clip
+                    # Case B: TTS > clip → extend clip by looping to fill TTS duration
+                    try:
+                        import subprocess as _sp, json as _j2
+                        def _probe_duration(path: str, stream: str) -> float:
+                            r = _sp.run(
+                                ["ffprobe", "-v", "quiet", "-print_format", "json",
+                                 "-show_streams", "-select_streams", stream, path],
+                                capture_output=True, text=True, timeout=15
+                            )
+                            data = _j2.loads(r.stdout)
+                            segs = data.get("streams", [])
+                            return float(segs[0].get("duration", 0)) if segs else 0.0
+
+                        tts_dur  = _probe_duration(str(audio_path), "a:0")
+                        clip_dur = _probe_duration(str(working_path), "v:0")
+
+                        logger.info(f"[tts-sync] clip={clip_dur:.2f}s  tts={tts_dur:.2f}s")
+
+                        if tts_dur < 1.0:
+                            logger.warning("[tts-sync] TTS duration too short to sync, skipping")
+                        elif clip_dur > tts_dur + 0.5:
+                            # Case A: trim silent tail
+                            working_path = editor.trim_clip(working_path, 0, tts_dur)
+                            logger.info(f"[tts-sync] Case A — trimmed tail: {clip_dur:.1f}s → {tts_dur:.1f}s")
+                        elif tts_dur > clip_dur + 0.5:
+                            # Case B: loop clip to fill TTS duration
+                            looped_path = working_path.parent / (working_path.stem + "_looped.mp4")
+                            loop_cmd = [
+                                "ffmpeg", "-y",
+                                "-stream_loop", "-1",        # infinite loop input
+                                "-i", str(working_path),
+                                "-t", str(tts_dur),          # cut to exact TTS length
+                                "-c:v", "libx264", "-c:a", "aac",
+                                "-preset", "veryfast",
+                                "-loglevel", "error",
+                                str(looped_path)
+                            ]
+                            loop_result = _sp.run(loop_cmd, capture_output=True, text=True, timeout=120)
+                            if loop_result.returncode == 0 and looped_path.exists():
+                                working_path = looped_path
+                                logger.info(f"[tts-sync] Case B — looped clip: {clip_dur:.1f}s → {tts_dur:.1f}s")
+                            else:
+                                logger.warning(f"[tts-sync] Loop failed: {loop_result.stderr[:200]}")
+                        else:
+                            logger.info(f"[tts-sync] Durations within 0.5s tolerance, no adjustment needed")
+                    except Exception as sync_err:
+                        logger.warning(f"[tts-sync] Could not sync clip to TTS duration: {sync_err}")
             except Exception as e:
                 logger.warning(f"TTS generation failed: {e}")
 
@@ -1303,7 +1508,12 @@ async def approve_and_render(
                 working_path, f"Credits: {source.channel_name}"
             )
 
-        # Step 8: Update article with clip path
+        # Step 8: Aspect Ratio Rescale (9:16 for Shorts, 1:1 for Square)
+        if aspect_ratio and aspect_ratio != "16:9":
+            working_path = editor.rescale_aspect_ratio(working_path, aspect_ratio)
+            logger.info(f"Rescaled to {aspect_ratio}: {working_path}")
+
+        # Step 9: Update article with clip path
         article.clip_path = str(working_path)
         db.commit()
 
@@ -1587,8 +1797,9 @@ async def _generate_mode_a_video_task(db: Session, script_id: int, clip_path: st
         db.commit()
         db.refresh(video)
 
-        # Set output path
-        video_dir = Path("data/videos")
+        # Set output path — use absolute path to survive cwd differences in background tasks
+        _backend_dir = Path(__file__).resolve().parent.parent.parent  # backend/
+        video_dir = _backend_dir / "data" / "videos"
         video_dir.mkdir(parents=True, exist_ok=True)
         start_time = datetime.now()
         output_path = video_dir / f"video_{video.id}_{start_time.strftime('%Y%m%d_%H%M%S')}.mp4"
@@ -1630,3 +1841,57 @@ async def _generate_mode_a_video_task(db: Session, script_id: int, clip_path: st
             pass
     finally:
         db.close()
+
+
+# ═══════════════════════════════════════════════════════════════
+# Admin: End Screen Asset Management
+# ═══════════════════════════════════════════════════════════════
+
+@router.post("/admin/end-screens/generate")
+async def prebuild_end_screens(force: bool = False):
+    """
+    Pre-generate end screen images for all content types × aspect ratios.
+    Idempotent — skips existing files unless force=true.
+
+    POST /api/youtube/admin/end-screens/generate
+    POST /api/youtube/admin/end-screens/generate?force=true
+    """
+    from app.services.end_screen_service import EndScreenService
+    service = EndScreenService()
+    results = service.prebuild_all(force=force)
+
+    total = sum(len(v) for v in results.values())
+    errors = sum(1 for ct in results.values() for r in ct.values() if r.startswith("ERROR"))
+
+    return {
+        "status": "complete",
+        "total": total,
+        "errors": errors,
+        "results": results,
+    }
+
+
+@router.get("/admin/end-screens/list")
+async def list_end_screens():
+    """
+    List all pre-built end screen assets with their paths and existence status.
+    """
+    from app.services.end_screen_service import EndScreenService
+    service = EndScreenService()
+
+    manifest = {}
+    for ct in service.OUTPUT_DIR.iterdir() if False else []:
+        pass  # placeholder
+
+    for ct_name in __import__('app.content_types', fromlist=['CONTENT_TYPES']).CONTENT_TYPES:
+        manifest[ct_name] = {}
+        for ar in service.ASPECT_SIZES:
+            ar_tag = ar.replace(":", "x")
+            path = service.OUTPUT_DIR / f"end_{ct_name}_{ar_tag}.png"
+            manifest[ct_name][ar] = {
+                "path": str(path),
+                "exists": path.exists(),
+                "size_kb": round(path.stat().st_size / 1024, 1) if path.exists() else None,
+            }
+
+    return {"assets": manifest}
